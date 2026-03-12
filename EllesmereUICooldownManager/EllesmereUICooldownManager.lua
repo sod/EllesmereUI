@@ -271,6 +271,8 @@ local function IsTotemChildStillValid(ch)
         if issecretvalue and issecretvalue(rd) then return true end
         return rd > 0
     end
+    -- Fallback: hook caches are empty after /reload until SetCooldown fires.
+    if ch.Cooldown and ch.Cooldown:IsVisible() then return true end
     return false
 end
 
