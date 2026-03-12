@@ -5358,12 +5358,41 @@ function ns.GetCDMSpellsForBar(barKey)
     local spells = {}
     local seen = {}
     local seenSpellID = {}  -- dedup by spellID across categories
+
+    -- Cache category data to avoid double API calls (pre-scan + main loop).
+    local catCache = {}
     for _, cat in ipairs(cats) do
-        local allIDs = C_CooldownViewer.GetCooldownViewerCategorySet(cat, true) or {}
+        local allIDs  = C_CooldownViewer.GetCooldownViewerCategorySet(cat, true) or {}
         local knownIDs = C_CooldownViewer.GetCooldownViewerCategorySet(cat, false) or {}
         local knownSet = {}
         for _, id in ipairs(knownIDs) do knownSet[id] = true end
+        catCache[#catCache + 1] = { cat = cat, allIDs = allIDs, knownSet = knownSet }
+    end
 
+    -- Pre-scan ALL categories before the main loop. Blizzard can issue two cdIDs
+    -- for the same spell (one learned, one not) and they can be in different
+    -- categories. Building spellIDKnown per-category would miss cross-category
+    -- matches, causing the spell to appear unlearned if the unlearned cdID is in
+    -- an earlier category than the learned one. Register every spellID variant
+    -- (frame-resolved, override/linked, base) for learned cdIDs.
+    local spellIDKnown = {}
+    for _, cd in ipairs(catCache) do
+        for _, cdID in ipairs(cd.allIDs) do
+            if cd.knownSet[cdID] then
+                local s1 = cdIDToChildSID[cdID]
+                if s1 and s1 > 0 then spellIDKnown[s1] = true end
+                local info = C_CooldownViewer.GetCooldownViewerCooldownInfo(cdID)
+                if info then
+                    local s2 = ResolveInfoSpellID(info)
+                    if s2 and s2 > 0 then spellIDKnown[s2] = true end
+                    if info.spellID and info.spellID > 0 then spellIDKnown[info.spellID] = true end
+                end
+            end
+        end
+    end
+
+    for _, cd in ipairs(catCache) do
+        local cat, allIDs, knownSet = cd.cat, cd.allIDs, cd.knownSet
         -- Passive filter only applies to cooldown categories (0/1).
         -- Buff/debuff categories (2/3) track proc auras which are passive by
         -- nature — filtering them would remove valid buff bar entries.
@@ -5375,10 +5404,11 @@ function ns.GetCDMSpellsForBar(barKey)
                 -- Prefer the frame-resolved spellID from the viewer child scan.
                 -- The cooldownInfo struct can contain the wrong spellID for buff
                 -- entries (spec aura instead of the actual tracked buff).
+                local cdInfo  -- retain for base spellID fallback in isKnown check
                 local sid = cdIDToChildSID[cdID]
                 if not sid then
-                    local info = C_CooldownViewer.GetCooldownViewerCooldownInfo(cdID)
-                    if info then sid = ResolveInfoSpellID(info) end
+                    cdInfo = C_CooldownViewer.GetCooldownViewerCooldownInfo(cdID)
+                    if cdInfo then sid = ResolveInfoSpellID(cdInfo) end
                 end
                 sid = sid or 0
                 if sid > 0 and not seenSpellID[sid] then
@@ -5389,6 +5419,8 @@ function ns.GetCDMSpellsForBar(barKey)
                         if name and (tex or cat == 2 or cat == 3) then
                             seenSpellID[sid] = true
                             local isConflict = SpellConflictsWithOtherBar(sid, barKey)
+                            local baseKnown = cdInfo and cdInfo.spellID
+                                and cdInfo.spellID > 0 and spellIDKnown[cdInfo.spellID]
                             spells[#spells + 1] = {
                                 cdID = cdID,
                                 spellID = sid,
@@ -5397,7 +5429,7 @@ function ns.GetCDMSpellsForBar(barKey)
                                 cdmCat = cat,
                                 cdmCatGroup = (cat == 2 or cat == 3) and "buff" or "cooldown",
                                 isDisplayed = ourPool[sid] or blizzTracked[sid] or false,
-                                isKnown = knownSet[cdID] or false,
+                                isKnown = knownSet[cdID] or spellIDKnown[sid] or baseKnown or false,
                                 isConflict = isConflict or false,
                             }
                         end
