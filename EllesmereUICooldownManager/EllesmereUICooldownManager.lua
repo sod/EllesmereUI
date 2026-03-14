@@ -3465,6 +3465,7 @@ local function UpdateCustomBarIcons(barKey)
             -- On-use bag items use large negative IDs (<= -100, negated itemID)
             elseif spellID <= -100 then
                 local bagItemID = -spellID
+                local itemCount = C_Item.GetItemCount(bagItemID, false, true) or 0
                 local tex = C_Item.GetItemIconByID(bagItemID)
                 if tex then
                     if tex ~= ourIcon._lastTex then
@@ -3490,7 +3491,12 @@ local function UpdateCustomBarIcons(barKey)
                             ourIcon._lastDesat = false
                         end
                     end
-                    ourIcon._chargeText:Hide()
+                    if barData.showCharges and itemCount > 0 then
+                        ourIcon._chargeText:SetText(tostring(itemCount))
+                        ourIcon._chargeText:Show()
+                    else
+                        ourIcon._chargeText:Hide()
+                    end
                     ourIcon:Show()
                     visibleCount = visibleCount + 1
                 else
