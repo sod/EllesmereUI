@@ -7315,6 +7315,12 @@ eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo, arg3)
     end
     if event == "PLAYER_ENTERING_WORLD" then
         _inCombat = InCombatLockdown and InCombatLockdown() or false
+        -- Wipe hook-captured cooldown caches so stale state from a previous
+        -- character doesn't persist after alt switch or reload.
+        wipe(_ecmeChildHasDurObj)
+        wipe(_ecmeDurObjCache)
+        wipe(_ecmeRawStartCache)
+        wipe(_ecmeRawDurCache)
         -- Validate spec on every zone-in (catches auto spec swaps, login, etc.)
         C_Timer.After(0.5, function()
             ValidateSpec()
