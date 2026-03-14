@@ -4819,7 +4819,7 @@ end
 --  Grid Show/Hide (show empty slots during spell drag)
 -------------------------------------------------------------------------------
 local gridShown = false
-local _slotChangedPending = false -- debounce for ACTIONBAR_SLOT_CHANGED
+local _buttonVisibilityPending = false -- debounce for empty-button visibility refresh
 local _spellsChangedPending = false -- debounce for SPELLS_CHANGED
 
 local function OnGridChange()
@@ -5622,11 +5622,26 @@ function EAB:FinishSetup()
         end
     end)
 
-    -- UPDATE_BONUS_ACTIONBAR is intentionally NOT registered. The secure
-    -- state driver (RegisterStateDriver on MainBar) handles bar paging in
-    -- C code, and ACTIONBAR_SLOT_CHANGED (debounced) handles button
-    -- visibility updates. Re-applying scale and layout here was redundant
-    -- and caused FPS drops during mount/dismount and druid form shifts.
+    local function QueueAlwaysShowButtonsRefresh()
+        -- During drag, skip. OnGridChange already shows everything, and
+        -- HIDEGRID / CURSOR_CHANGED will restore afterwards.
+        if gridShown then return end
+        if _buttonVisibilityPending then return end
+        _buttonVisibilityPending = true
+        C_Timer_After(0, function()
+            _buttonVisibilityPending = false
+            if gridShown then return end
+            for _, info in ipairs(BAR_CONFIG) do
+                self:ApplyAlwaysShowButtons(info.key)
+            end
+        end)
+    end
+
+    -- Slot changes alone are not sufficient for all paging transitions
+    -- (dragonriding, druid forms, mount state). Include page/bonus events
+    -- so empty-slot visibility refreshes immediately on those swaps.
+    self:RegisterEvent("ACTIONBAR_PAGE_CHANGED", QueueAlwaysShowButtonsRefresh)
+    self:RegisterEvent("UPDATE_BONUS_ACTIONBAR", QueueAlwaysShowButtonsRefresh)
 
     self:RegisterEvent("ZONE_CHANGED_NEW_AREA", function()
         self:UpdateHousingVisibility()
@@ -5656,23 +5671,10 @@ function EAB:FinishSetup()
         end)
     end)
 
-    -- Slot changed: update visibility when a spell is placed/removed from a slot
-    -- This fires per-slot (12+ times during a bar page swap), so debounce into
-    -- a single deferred pass.
-    self:RegisterEvent("ACTIONBAR_SLOT_CHANGED", function()
-        -- During drag, skip -- OnGridChange already shows everything,
-        -- and HIDEGRID / CURSOR_CHANGED will restore afterwards
-        if gridShown then return end
-        if _slotChangedPending then return end
-        _slotChangedPending = true
-        C_Timer_After(0, function()
-            _slotChangedPending = false
-            if gridShown then return end
-            for _, info in ipairs(BAR_CONFIG) do
-                self:ApplyAlwaysShowButtons(info.key)
-            end
-        end)
-    end)
+    -- Slot changed: update visibility when a spell is placed/removed from a slot.
+    -- This can fire per-slot (12+ times during a bar page swap), so use the
+    -- shared debounced visibility queue.
+    self:RegisterEvent("ACTIONBAR_SLOT_CHANGED", QueueAlwaysShowButtonsRefresh)
 
     -- Pet bar: re-layout and refresh visibility when the pet's action bar
     -- changes. PET_BAR_UPDATE covers ability changes; PET_UI_UPDATE covers
