@@ -1571,13 +1571,24 @@ function ns.UpdateTrackedBuffBarTimers()
 
                     -- Raw start+dur fallback (totems): drive the bar manually
                     -- from the plain numbers the main CDM hooks captured.
-                    local rawRemaining, rawDur
+                    local rawRemaining, rawDur, rawIsSecret
                     if not durObj and blzChild then
                         local rs = ns._ecmeRawStartCache[blzChild]
                         local rd = ns._ecmeRawDurCache[blzChild]
-                        if rs and rd and type(rs) == "number" and type(rd) == "number" and rd > 0 then
-                            rawRemaining = math.max(0, (rs + rd) - now)
-                            rawDur = rd
+                        if rs and rd then
+                            local sRS = issecretvalue and issecretvalue(rs)
+                            local sRD = issecretvalue and issecretvalue(rd)
+                            if sRS or sRD then
+                                rawIsSecret = true
+                                local ok, calcRem = pcall(function() return (rs + rd) - now end)
+                                if ok and calcRem then
+                                    rawRemaining = calcRem
+                                    rawDur = rd
+                                end
+                            elseif type(rs) == "number" and type(rd) == "number" and rd > 0 then
+                                rawRemaining = math.max(0, (rs + rd) - now)
+                                rawDur = rd
+                            end
                         end
                     end
 
@@ -1621,8 +1632,12 @@ function ns.UpdateTrackedBuffBarTimers()
                             end
                         end
                     else
-                        -- No durObj at all: passive unless raw fallback available
-                        if not (rawRemaining and rawRemaining > 0) then
+                        -- No durObj: passive unless raw fallback available
+                        if rawIsSecret then
+                            if rawRemaining then
+                                bar._isPassive = false
+                            end
+                        elseif not (rawRemaining and rawRemaining > 0) then
                             bar._isPassive = true
                         end
                     end
@@ -1657,18 +1672,31 @@ function ns.UpdateTrackedBuffBarTimers()
                                 bar._timerText:Hide()
                             end
                         end
-                    elseif rawRemaining and rawRemaining > 0 then
+                    elseif rawRemaining and (rawIsSecret or rawRemaining > 0) then
                         -- Raw start+dur path (totems/summons): manual bar fill
                         sb:SetMinMaxValues(0, 1)
-                        sb:SetValue(rawRemaining / rawDur)
+                        if rawIsSecret then
+                            pcall(sb.SetValue, sb, rawRemaining / rawDur)
+                        else
+                            sb:SetValue(rawRemaining / rawDur)
+                        end
                         if cfg.showSpark and bar._spark then bar._spark:Show() end
                         if cfg.showTimer and bar._timerText then
-                            local t
-                            if rawRemaining >= 3600 then t = format("%dh", floor(rawRemaining / 3600))
-                            elseif rawRemaining >= 60 then t = format("%dm", floor(rawRemaining / 60))
-                            elseif rawRemaining >= 10 then t = format("%d", floor(rawRemaining))
-                            else t = format("%.1f", rawRemaining) end
-                            bar._timerText:SetText(t)
+                            if rawIsSecret then
+                                local fok, fstr = pcall(format, "%.1f", rawRemaining)
+                                if fok and fstr then
+                                    bar._timerText:SetText(fstr)
+                                else
+                                    bar._timerText:SetText("")
+                                end
+                            else
+                                local t
+                                if rawRemaining >= 3600 then t = format("%dh", floor(rawRemaining / 3600))
+                                elseif rawRemaining >= 60 then t = format("%dm", floor(rawRemaining / 60))
+                                elseif rawRemaining >= 10 then t = format("%d", floor(rawRemaining))
+                                else t = format("%.1f", rawRemaining) end
+                                bar._timerText:SetText(t)
+                            end
                             bar._timerText:Show()
                         end
                     else
