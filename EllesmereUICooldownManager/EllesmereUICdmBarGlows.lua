@@ -359,8 +359,19 @@ UpdateOverlayVisuals = function()
             local spellID = entry.spellID
             local mode = entry.mode or "ACTIVE"
 
+            local slotMismatch = false
+            if entry.actionSpellID then
+                local btn = overlay:GetParent()
+                if btn and btn.action then
+                    local aType, aID = GetActionInfo(btn.action)
+                    if aType == "spell" and aID and aID ~= entry.actionSpellID then
+                        slotMismatch = true
+                    end
+                end
+            end
+
             local auraActive = false
-            if spellID and spellID > 0 then
+            if not slotMismatch and spellID and spellID > 0 then
                 local blizzCache = ns._tickBlizzActiveCache
                 if blizzCache and blizzCache[spellID] then
                     auraActive = true
@@ -369,7 +380,7 @@ UpdateOverlayVisuals = function()
 
             local shouldGlow
             if mode == "MISSING" then
-                shouldGlow = not auraActive
+                shouldGlow = not slotMismatch and not auraActive
             else
                 shouldGlow = auraActive
             end
