@@ -311,6 +311,12 @@ local function SetupOverlays()
                     local key = assignKey .. "_" .. i
                     local btn = GetTargetButton(barIdx, btnIdx)
                     if btn then
+                        if not entry.actionSpellID and btn.action then
+                            local aType, aID = GetActionInfo(btn.action)
+                            if aType == "spell" and aID then
+                                entry.actionSpellID = aID
+                            end
+                        end
                         local existing = overlayFrames[key]
                         if existing then
                             -- If the button was reparented, follow it
