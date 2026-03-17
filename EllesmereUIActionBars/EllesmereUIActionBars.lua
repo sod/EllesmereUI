@@ -59,7 +59,7 @@ end
 local EXTRA_BARS = {
     { key = "MicroBar", label = "Micro Menu Bar", frameName = "MicroMenuContainer", hoverFrame = "MicroMenu", visibilityOnly = true },
     { key = "BagBar",   label = "Bag Bar",        frameName = "BagsBar", visibilityOnly = true },
-    { key = "QueueStatus", label = "Queue Status", frameName = "QueueStatusButton", visibilityOnly = true },
+    { key = "QueueStatus", label = "Queue Status", frameName = "QueueStatusButton", visibilityOnly = true, blizzOwnedVisibility = true },
     { key = "XPBar",    label = "XP Bar",         visibilityOnly = true, isDataBar = true },
     { key = "RepBar",   label = "Reputation Bar",  visibilityOnly = true, isDataBar = true },
     { key = "ExtraActionButton", label = "Extra Action Button", visibilityOnly = true, isBlizzardMovable = true },
@@ -6894,14 +6894,13 @@ local function SetupExtraBarHolder(barKey, frameName, barInfo)
 
     -- blizzOwnedVisibility: anchor to holder without reparenting so the
     -- Blizzard frame keeps its secure context (clicks still work).
+    -- Visibility is left to Blizzard (Show/Hide driven by LFG events).
     if barInfo and barInfo.blizzOwnedVisibility then
         SafeEnableMouse(holder, false)
 
+        -- Prevent Blizzard's layout system from repositioning, but keep
+        -- the frame's own layout behaviour intact so Show/Hide still work.
         blizzFrame.ignoreInLayout = true
-        if blizzFrame.SetIsLayoutFrame then
-            blizzFrame:SetIsLayoutFrame(false)
-        end
-        blizzFrame.IsLayoutFrame = nil
 
         SafeEnableMouse(blizzFrame, true)
         blizzFrame:SetFrameStrata("MEDIUM")
@@ -6917,7 +6916,20 @@ local function SetupExtraBarHolder(barKey, frameName, barInfo)
             blizzFrame:SetPoint("CENTER", holder, "CENTER", 0, 0)
             _recentering = false
         end
-        AnchorToHolder()
+
+        -- Only anchor now if Blizzard already has the frame shown (e.g.
+        -- player is in a queue).  Otherwise wait for Blizzard to Show it.
+        if blizzFrame:IsShown() then
+            AnchorToHolder()
+        end
+
+        -- Re-anchor whenever Blizzard shows the frame (entering queue, etc.)
+        blizzFrame:HookScript("OnShow", function()
+            C_Timer_After(0, function()
+                if _recentering or InCombatLockdown() then return end
+                AnchorToHolder()
+            end)
+        end)
 
         hooksecurefunc(blizzFrame, "SetPoint", function(self)
             if _recentering then return end
