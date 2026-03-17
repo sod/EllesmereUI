@@ -6894,12 +6894,9 @@ local function SetupExtraBarHolder(barKey, frameName, barInfo)
 
     -- blizzOwnedVisibility: anchor to holder without reparenting so the
     -- Blizzard frame keeps its secure context (clicks still work).
-    -- Visibility is left to Blizzard (Show/Hide driven by LFG events).
     if barInfo and barInfo.blizzOwnedVisibility then
         SafeEnableMouse(holder, false)
 
-        -- Prevent Blizzard's layout system from repositioning, but keep
-        -- the frame's own layout behaviour intact so Show/Hide still work.
         blizzFrame.ignoreInLayout = true
 
         SafeEnableMouse(blizzFrame, true)
@@ -6917,13 +6914,10 @@ local function SetupExtraBarHolder(barKey, frameName, barInfo)
             _recentering = false
         end
 
-        -- Only anchor now if Blizzard already has the frame shown (e.g.
-        -- player is in a queue).  Otherwise wait for Blizzard to Show it.
         if blizzFrame:IsShown() then
             AnchorToHolder()
         end
 
-        -- Re-anchor whenever Blizzard shows the frame (entering queue, etc.)
         blizzFrame:HookScript("OnShow", function()
             C_Timer_After(0, function()
                 if _recentering or InCombatLockdown() then return end

@@ -2843,8 +2843,6 @@ LayoutCDMBar = function(barKey)
     end
     frame:SetSize(SnapForScale(totalW, 1), SnapForScale(totalH, 1))
 
-    -- Propagate width/height matches to any bars linked to this CDM bar
-    -- (e.g. unit frame power/resource bars matched via unlock mode).
     local unlockKey = "CDM_" .. barKey
     if EllesmereUI.PropagateWidthMatch then
         EllesmereUI.PropagateWidthMatch(unlockKey)

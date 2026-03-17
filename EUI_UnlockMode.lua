@@ -340,9 +340,6 @@ function MatchH.ApplyHeightMatch(sourceKey, targetKey)
     end
 end
 
--- Propagate width/height matches when a target element's size changes.
--- Called from external modules (e.g. CDM) after resizing a bar that other
--- elements may be width/height-matched to.
 function EllesmereUI.PropagateWidthMatch(targetKey)
     local db = MatchH.GetWidthMatchDB()
     if not db then return end
