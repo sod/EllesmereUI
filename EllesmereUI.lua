@@ -6272,13 +6272,24 @@ do
         end
         -- Apply saved position and scale
         local pos = EllesmereUIDB and EllesmereUIDB.secondaryStatsPos
+        local scale = 1.0
         if pos then
             if pos.point then
                 statsFrame:ClearAllPoints()
                 statsFrame:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
             end
             if pos.scale then
-                statsFrame:SetScale(pos.scale)
+                scale = pos.scale
+            end
+        end
+        if statsText then
+            local font = EllesmereUI.ResolveFontName(EllesmereUI.GetFontsDB().global)
+            local fontSize = math.floor(12 * scale + 0.5)
+            statsText:SetFont(font, fontSize, EllesmereUI.GetFontOutlineFlag())
+            if EllesmereUI.GetFontUseShadow() then
+                statsText:SetShadowOffset(1, -1)
+            else
+                statsText:SetShadowOffset(0, 0)
             end
         end
         statsFrame:RegisterUnitEvent("UNIT_STATS", "player")
