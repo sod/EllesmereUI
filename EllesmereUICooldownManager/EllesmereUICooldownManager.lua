@@ -9,21 +9,17 @@ local _, ns = ...
 local ECME = EllesmereUI.Lite.NewAddon("EllesmereUICooldownManager")
 ns.ECME = ECME
 
-local PP = EllesmereUI.PP
-
 -- Snap a value to a whole number of physical pixels at the bar's effective scale.
 -- Uses the same approach as the border system: convert to physical pixels,
 -- round to nearest integer, convert back.
 local function SnapForScale(x, barScale)
     if x == 0 then return 0 end
     local es = (UIParent:GetScale() or 1) * (barScale or 1)
-    return PP.SnapForES(x, es)
+    return EllesmereUI.PP.SnapForES(x, es)
 end
 
 local floor = math.floor
 local GetTime = GetTime
-local InCombatLockdown = InCombatLockdown
-local GetSpecialization = GetSpecialization
 
 ns.DEFAULT_MAPPING_NAME = "Buff Name (eg: Divine Purpose)"
 
@@ -1805,9 +1801,12 @@ end
 --  CDM Look: Border Reskinning
 -------------------------------------------------------------------------------
 local cdmBorderFrames = {}
-local safeEq = function(a, b) return a == b end
 
 local function GetOrCreateCDMBorder(slot)
+    local function SafeEq(a, b)
+        return a == b
+    end
+
     if cdmBorderFrames[slot] then return cdmBorderFrames[slot] end
 
     slot.__ECMEHidden   = slot.__ECMEHidden or {}
@@ -1828,10 +1827,10 @@ local function GetOrCreateCDMBorder(slot)
                 elseif objType == "Texture" then
                     local ok, rawLayer = pcall(region.GetDrawLayer, region)
                     if ok and rawLayer ~= nil then
-                        local okB, isBorder   = pcall(safeEq, rawLayer, "BORDER")
-                        local okO, isOverlay  = pcall(safeEq, rawLayer, "OVERLAY")
-                        local okA, isArtwork  = pcall(safeEq, rawLayer, "ARTWORK")
-                        local okG, isBG       = pcall(safeEq, rawLayer, "BACKGROUND")
+                        local okB, isBorder   = pcall(SafeEq, rawLayer, "BORDER")
+                        local okO, isOverlay  = pcall(SafeEq, rawLayer, "OVERLAY")
+                        local okA, isArtwork  = pcall(SafeEq, rawLayer, "ARTWORK")
+                        local okG, isBG       = pcall(SafeEq, rawLayer, "BACKGROUND")
                         if (okB and isBorder) or (okO and isOverlay) then
                             slot.__ECMEHidden[#slot.__ECMEHidden + 1] = region
                         elseif not slot.__ECMEIcon and ((okA and isArtwork) or (okG and isBG)) then
@@ -1874,7 +1873,7 @@ local function GetOrCreateCDMBorder(slot)
     local border = CreateFrame("Frame", nil, slot)
     if slot.__ECMEIcon then border:SetAllPoints(slot.__ECMEIcon) else border:SetAllPoints() end
     border:SetFrameLevel(slot:GetFrameLevel() + 5)
-    PP.CreateBorder(border, 0, 0, 0, 1, edgeSize)
+    EllesmereUI.PP.CreateBorder(border, 0, 0, 0, 1, edgeSize)
 
     cdmBorderFrames[slot] = border
     return border
@@ -2141,7 +2140,7 @@ local function StopProcGlow(icon)
 end
 
 -- Proc glow color: hardcoded gold (#ffc923)
-local PROC_GLOW_R, PROC_GLOW_G, PROC_GLOW_B = 1.0, 0.788, 0.137
+local PROC_GLOW_COLOR = { 1.0, 0.788, 0.137 }
 
 -- Install hooks on ActionButtonSpellAlertManager (called once during init)
 local _procGlowHooksInstalled = false
@@ -2169,7 +2168,7 @@ local function InstallProcGlowHooks()
                 cdmChild.SpellActivationAlert:SetAlpha(0)
                 cdmChild.SpellActivationAlert:Hide()
             end
-            local cr, cg, cb = PROC_GLOW_R, PROC_GLOW_G, PROC_GLOW_B
+            local cr, cg, cb = PROC_GLOW_COLOR[1], PROC_GLOW_COLOR[2], PROC_GLOW_COLOR[3]
             ShowProcGlow(ourIcon, cr, cg, cb)
             -- Force icon texture re-evaluation so override textures apply immediately
             ourIcon._lastTex = nil
@@ -2242,7 +2241,7 @@ local function OnProcGlowEvent(event, spellID)
                         end
                         if matched and icons[i] then
                             if event == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW" then
-                            ShowProcGlow(icons[i], PROC_GLOW_R, PROC_GLOW_G, PROC_GLOW_B)
+                            ShowProcGlow(icons[i], PROC_GLOW_COLOR[1], PROC_GLOW_COLOR[2], PROC_GLOW_COLOR[3])
                         else
                             StopProcGlow(icons[i])
                         end
@@ -3006,6 +3005,73 @@ local function ComputeTopRowStride(barData, count)
     return stride, numRows, topCount
 end
 
+-- Empty custom bars still need a stable footprint so unlock mode can keep a
+-- visible mover and convert drag positions correctly before any icons exist.
+local EMPTY_CDM_BAR_SIZE = { 100, 36 }
+
+-- Count the spell entries that contribute real icon slots for this bar.
+-- Unlock mode uses this to estimate a footprint before the live frame has
+-- been laid out, which is common for freshly created Misc bars.
+local function CountCDMBarSpells(barKey)
+    local count = 0
+    local sd = ns.GetBarSpellData(barKey)
+    if not sd then return 0 end
+    if sd.customSpells then
+        for _, sid in ipairs(sd.customSpells) do
+            if sid and sid ~= 0 then count = count + 1 end
+        end
+    elseif sd.trackedSpells then
+        for _, sid in ipairs(sd.trackedSpells) do
+            if sid and sid ~= 0 then count = count + 1 end
+        end
+        if sd.extraSpells then
+            for _, sid in ipairs(sd.extraSpells) do
+                if sid and sid ~= 0 then count = count + 1 end
+            end
+        end
+    end
+    return count
+end
+
+local function ComputeCDMBarSize(barData, count)
+    local iW = SnapForScale(barData.iconSize or 36, 1)
+    local iH = iW
+    if (barData.iconShape or "none") == "cropped" then
+        iH = SnapForScale(math.floor((barData.iconSize or 36) * 0.80 + 0.5), 1)
+    end
+    local sp = SnapForScale(barData.spacing or 2, 1)
+    local rows = barData.numRows or 1
+    if rows < 1 then rows = 1 end
+    local stride = ComputeTopRowStride(barData, count)
+    local grow = barData.growDirection or "RIGHT"
+    local isH = (grow == "RIGHT" or grow == "LEFT" or grow == "CENTER")
+    if isH then
+        return stride * iW + (stride - 1) * sp,
+               rows * iH + (rows - 1) * sp
+    end
+    return rows * iW + (rows - 1) * sp,
+           stride * iH + (stride - 1) * sp
+end
+
+-- Return the authoritative footprint unlock mode should use for a CDM bar.
+-- Prefer the live frame when it already has bounds; otherwise derive the size
+-- from bar configuration, and fall back to a stable empty-bar placeholder.
+local function GetStableCDMBarSize(barKey, frame, barData)
+    if frame then
+        local w, h = frame:GetWidth() or 0, frame:GetHeight() or 0
+        if w > 1 and h > 1 then
+            return w, h
+        end
+    end
+
+    local count = CountCDMBarSpells(barKey)
+    if barData and count > 0 then
+        return ComputeCDMBarSize(barData, count)
+    end
+
+    return EMPTY_CDM_BAR_SIZE[1], EMPTY_CDM_BAR_SIZE[2]
+end
+
 -------------------------------------------------------------------------------
 --  Layout icons within a CDM bar
 -------------------------------------------------------------------------------
@@ -3039,6 +3105,14 @@ LayoutCDMBar = function(barKey)
 
     local count = #visibleIcons
     if count == 0 then
+        local curW = frame:GetWidth() or 0
+        local curH = frame:GetHeight() or 0
+        if curW <= 1 or curH <= 1 then
+            local fallbackW, fallbackH = GetStableCDMBarSize(barKey, nil, barData)
+            frame:SetSize(fallbackW, fallbackH)
+            frame._prevLayoutW = fallbackW
+            frame._prevLayoutH = fallbackH
+        end
         -- Keep the frame at its current size so anchor math has valid bounds.
         -- Alpha-zero hides it visually while preserving layout dimensions.
         EllesmereUI.SetElementVisibility(frame, false)
@@ -3238,8 +3312,8 @@ local function CreateCDMIcon(barKey, index)
 
     -- Icon texture
     local tex = icon:CreateTexture(nil, "ARTWORK")
-    PP.Point(tex, "TOPLEFT", icon, "TOPLEFT", borderSize, -borderSize)
-    PP.Point(tex, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", -borderSize, borderSize)
+    EllesmereUI.PP.Point(tex, "TOPLEFT", icon, "TOPLEFT", borderSize, -borderSize)
+    EllesmereUI.PP.Point(tex, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", -borderSize, borderSize)
     tex:SetTexCoord(zoom, 1 - zoom, zoom, 1 - zoom)
     icon._tex = tex
 
@@ -3314,7 +3388,7 @@ local function CreateCDMIcon(barKey, index)
     icon._tooltipShown = false
 
     -- Pixel-perfect border (4 strips via PP)
-    PP.CreateBorder(icon, barData.borderR or 0, barData.borderG or 0, barData.borderB or 0, barData.borderA or 1, borderSize, "OVERLAY", 7)
+    EllesmereUI.PP.CreateBorder(icon, barData.borderR or 0, barData.borderG or 0, barData.borderB or 0, barData.borderA or 1, borderSize, "OVERLAY", 7)
     icon._edges = {}
 
     -- State tracking
@@ -3472,15 +3546,15 @@ ApplyShapeToCDMIcon = function(icon, shape, barData)
 
         -- Restore square borders (pixel-perfect via PP)
         if icon._ppBorders then
-            PP.ShowBorder(icon)
-            PP.UpdateBorder(icon, borderSz, brdR, brdG, brdB, brdA)
+            EllesmereUI.PP.ShowBorder(icon)
+            EllesmereUI.PP.UpdateBorder(icon, borderSz, brdR, brdG, brdB, brdA)
         end
 
         -- Restore icon texture coords
         if icon._tex then
             icon._tex:ClearAllPoints()
-            PP.Point(icon._tex, "TOPLEFT", icon, "TOPLEFT", borderSz, -borderSz)
-            PP.Point(icon._tex, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", -borderSz, borderSz)
+            EllesmereUI.PP.Point(icon._tex, "TOPLEFT", icon, "TOPLEFT", borderSz, -borderSz)
+            EllesmereUI.PP.Point(icon._tex, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", -borderSz, borderSz)
             if shape == "cropped" then
                 icon._tex:SetTexCoord(zoom, 1 - zoom, zoom + 0.10, 1 - zoom - 0.10)
             else
@@ -3531,15 +3605,15 @@ ApplyShapeToCDMIcon = function(icon, shape, barData)
     local halfIE = iconExp / 2
     if icon._tex then
         icon._tex:ClearAllPoints()
-        PP.Point(icon._tex, "TOPLEFT", icon, "TOPLEFT", -halfIE, halfIE)
-        PP.Point(icon._tex, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", halfIE, -halfIE)
+        EllesmereUI.PP.Point(icon._tex, "TOPLEFT", icon, "TOPLEFT", -halfIE, halfIE)
+        EllesmereUI.PP.Point(icon._tex, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", halfIE, -halfIE)
     end
 
     -- Mask position (inset for border)
     mask:ClearAllPoints()
     if borderSz >= 1 then
-        PP.Point(mask, "TOPLEFT", icon, "TOPLEFT", 1, -1)
-        PP.Point(mask, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
+        EllesmereUI.PP.Point(mask, "TOPLEFT", icon, "TOPLEFT", 1, -1)
+        EllesmereUI.PP.Point(mask, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", -1, 1)
     else
         mask:SetAllPoints(icon)
     end
@@ -3552,7 +3626,7 @@ ApplyShapeToCDMIcon = function(icon, shape, barData)
 
     -- Hide square borders (pixel-perfect via PP)
     if icon._ppBorders then
-        PP.HideBorder(icon)
+        EllesmereUI.PP.HideBorder(icon)
     end
 
     -- Shape border texture (on a dedicated frame above the cooldown swipe)
@@ -3628,6 +3702,11 @@ local _spellIconCache = {}
 --  Update icons for a CDM bar based on Blizzard CDM children
 --  Default bars (cooldowns/utility/buffs) mirror Blizzard CDM.
 --  Custom bars track user-specified spells directly.
+--
+--  Runtime note:
+--  `UpdateCustomBarIcons` and `UpdateTrackedBarIcons` form the core icon-refresh
+--  hot path. They are called from the throttled `UpdateAllCDMBars` tick below,
+--  not just during construction or settings changes.
 -------------------------------------------------------------------------------
 local function UpdateCustomBarIcons(barKey)
     local frame = cdmBarFrames[barKey]
@@ -4718,8 +4797,8 @@ local function RefreshCDMIconAppearance(barKey)
         -- Update texture zoom
         if icon._tex then
             icon._tex:ClearAllPoints()
-            PP.Point(icon._tex, "TOPLEFT", icon, "TOPLEFT", borderSize, -borderSize)
-            PP.Point(icon._tex, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", -borderSize, borderSize)
+            EllesmereUI.PP.Point(icon._tex, "TOPLEFT", icon, "TOPLEFT", borderSize, -borderSize)
+            EllesmereUI.PP.Point(icon._tex, "BOTTOMRIGHT", icon, "BOTTOMRIGHT", -borderSize, borderSize)
             icon._tex:SetTexCoord(zoom, 1 - zoom, zoom, 1 - zoom)
         end
         -- Update cooldown (full frame so swipe covers the entire icon)
@@ -4735,7 +4814,7 @@ local function RefreshCDMIconAppearance(barKey)
         end
         -- Update border (pixel-perfect via PP)
         if icon._ppBorders then
-            PP.UpdateBorder(icon, borderSize, barData.borderR or 0, barData.borderG or 0, barData.borderB or 0, barData.borderA or 1)
+            EllesmereUI.PP.UpdateBorder(icon, borderSize, barData.borderR or 0, barData.borderG or 0, barData.borderB or 0, barData.borderA or 1)
         end
         -- Update background
         if icon._bg then
@@ -4779,7 +4858,7 @@ local function RefreshCDMIconAppearance(barKey)
         end
         icon._isActive = false
         if hadProcGlow and icon._glowOverlay then
-            StartNativeGlow(icon._glowOverlay, PROC_GLOW_STYLE, PROC_GLOW_R, PROC_GLOW_G, PROC_GLOW_B)
+            StartNativeGlow(icon._glowOverlay, PROC_GLOW_STYLE, PROC_GLOW_COLOR[1], PROC_GLOW_COLOR[2], PROC_GLOW_COLOR[3])
             icon._procGlowActive = true
         else
             icon._procGlowActive = false
@@ -5593,6 +5672,19 @@ local function UpdateTrackedBarIcons(barKey)
 end
 ns.UpdateTrackedBarIcons = UpdateTrackedBarIcons
 
+-------------------------------------------------------------------------------
+--  Tick Hot Path
+--
+--  The frame created during `CDMFinishSetup` drives this via `OnUpdate`.
+--  Although WoW calls that every frame, the function self-throttles to 0.1s and
+--  then performs the recurring runtime work:
+--  1) wipe per-tick caches
+--  2) rescan Blizzard CDM viewer children
+--  3) refresh tracked/custom bar icons
+--
+--  This is the performance-sensitive path that should keep working state in
+--  locals/upvalues where practical.
+-------------------------------------------------------------------------------
 local function UpdateAllCDMBars(dt)
     cdmUpdateThrottle = cdmUpdateThrottle + dt
     if cdmUpdateThrottle < 0.1 then return end
@@ -7198,50 +7290,6 @@ RegisterCDMUnlockElements = function()
         end
     end
 
-    -- Helper: count spells in a bar's data
-    local function CountBarSpells(bd)
-        local count = 0
-        local sd = ns.GetBarSpellData(bd.key)
-        if not sd then return 0 end
-        if sd.customSpells then
-            for _, sid in ipairs(sd.customSpells) do
-                if sid and sid ~= 0 then count = count + 1 end
-            end
-        elseif sd.trackedSpells then
-            for _, sid in ipairs(sd.trackedSpells) do
-                if sid and sid ~= 0 then count = count + 1 end
-            end
-            if sd.extraSpells then
-                for _, sid in ipairs(sd.extraSpells) do
-                    if sid and sid ~= 0 then count = count + 1 end
-                end
-            end
-        end
-        return count
-    end
-
-    -- Helper: compute bar dimensions from bar data
-    local function ComputeBarSize(bd, count)
-        local iW = SnapForScale(bd.iconSize or 36, 1)
-        local iH = iW
-        if (bd.iconShape or "none") == "cropped" then
-            iH = SnapForScale(math.floor((bd.iconSize or 36) * 0.80 + 0.5), 1)
-        end
-        local sp = SnapForScale(bd.spacing or 2, 1)
-        local rows = bd.numRows or 1
-        if rows < 1 then rows = 1 end
-        local stride = ComputeTopRowStride(bd, count)
-        local grow = bd.growDirection or "RIGHT"
-        local isH = (grow == "RIGHT" or grow == "LEFT" or grow == "CENTER")
-        if isH then
-            return stride * iW + (stride - 1) * sp,
-                   rows * iH + (rows - 1) * sp
-        else
-            return rows * iW + (rows - 1) * sp,
-                   stride * iH + (stride - 1) * sp
-        end
-    end
-
     local elements = {}
     for _, barData in ipairs(ECME.db.profile.cdmBars.bars) do
         local key = barData.key
@@ -7277,23 +7325,15 @@ RegisterCDMUnlockElements = function()
                 getFrame = function() return cdmBarFrames[key] end,
                 getSize = function()
                     local f = cdmBarFrames[key]
-                    if not f then return 100, 36 end
-                    local w, h = f:GetWidth(), f:GetHeight()
-                    if w <= 1 or h <= 1 then
-                        local bd2 = barDataByKey[key]
-                        if not bd2 then return w > 1 and w or 100, h > 1 and h or 36 end
-                        local count = CountBarSpells(bd2)
-                        if count == 0 then return w > 1 and w or 100, h > 1 and h or 36 end
-                        return ComputeBarSize(bd2, count)
-                    end
-                    return w, h
+                    local bd2 = barDataByKey[key]
+                    return GetStableCDMBarSize(key, f, bd2)
                 end,
                 linkedDimensions = true,
                 setWidth = function(_, newW)
                     -- Reverse-engineer iconSize from target width
                     local bd2 = barDataByKey[key]
                     if not bd2 then return end
-                    local count = CountBarSpells(bd2)
+                    local count = CountCDMBarSpells(key)
                     if count == 0 then return end
                     local rows = bd2.numRows or 1
                     if rows < 1 then rows = 1 end
@@ -7315,7 +7355,7 @@ RegisterCDMUnlockElements = function()
                     -- Reverse-engineer iconSize from target height
                     local bd2 = barDataByKey[key]
                     if not bd2 then return end
-                    local count = CountBarSpells(bd2)
+                    local count = CountCDMBarSpells(key)
                     if count == 0 then return end
                     local rows = bd2.numRows or 1
                     if rows < 1 then rows = 1 end
@@ -7394,6 +7434,14 @@ local function SetActiveSpec()
     EnsureSpec(p, specKey)
 end
 
+-------------------------------------------------------------------------------
+--  Bootstrap / Addon Enable
+--
+--  `OnInitialize` runs once per addon load to create SavedVariables hooks and
+--  expose options callbacks. `OnEnable` runs once per login/reload session to
+--  load spec state, initialize helper modules, and choose between first-login
+--  capture and the normal `CDMFinishSetup` path.
+-------------------------------------------------------------------------------
 function ECME:OnInitialize()
     self.db = EllesmereUI.Lite.NewDB("EllesmereUICooldownManagerDB", DEFAULTS, true)
 
@@ -7872,7 +7920,7 @@ local function ReconcileMainBarSpells()
                             if ok and overlayed then
                                 local ourIcon = FindOurIconForBlizzChild(barKey, ch)
                                 if ourIcon then
-                                    ShowProcGlow(ourIcon, PROC_GLOW_R, PROC_GLOW_G, PROC_GLOW_B)
+                                    ShowProcGlow(ourIcon, PROC_GLOW_COLOR[1], PROC_GLOW_COLOR[2], PROC_GLOW_COLOR[3])
                                 end
                             end
                         end
@@ -7901,7 +7949,7 @@ local function ReconcileMainBarSpells()
                                 end
                                 local ok2, ov2 = pcall(C_SpellActivationOverlay.IsSpellOverlayed, checkID)
                                 if ok2 and ov2 then
-                                    ShowProcGlow(icons[i], PROC_GLOW_R, PROC_GLOW_G, PROC_GLOW_B)
+                                    ShowProcGlow(icons[i], PROC_GLOW_COLOR[1], PROC_GLOW_COLOR[2], PROC_GLOW_COLOR[3])
                                 end
                             end
                         end
@@ -8112,6 +8160,10 @@ do
 end
 
 function ECME:CDMFinishSetup()
+    -- This is the one-time construction hub for a normal login/reload enable:
+    -- preload unlock helpers, build the initial bar set, spin up the periodic
+    -- tick frame, then schedule any deferred reconciliation/rebuild passes
+    -- needed once Blizzard's viewer children and layout have settled.
     -- Load the full unlock mode body early so anchor/propagation functions
     -- (ApplyAnchorPosition, PropagateWidthMatch, etc.) are available for
     -- the initial build pass. CDM SavedVariables are ready by this point.
@@ -8260,6 +8312,14 @@ function ECME:CDMFinishSetup()
     end)
 end
 
+-------------------------------------------------------------------------------
+--  Event-Driven Runtime Maintenance
+--
+--  This frame owns the non-tick triggers: login/world transitions, spec swaps,
+--  talent changes, roster updates, binding changes, proc-glow signals, and
+--  combat/visibility state. Most heavy work is deferred into rebuild helpers
+--  rather than performed inline in the event callback.
+-------------------------------------------------------------------------------
 -- Event frame
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
