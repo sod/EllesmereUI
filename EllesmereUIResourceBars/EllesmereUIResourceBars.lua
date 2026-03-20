@@ -1507,7 +1507,6 @@ local function BuildBars()
     if sp.enabled ~= false and cachedSecondary then
         if not secondaryFrame then
             secondaryFrame = CreateFrame("Frame", "ERB_SecondaryFrame", mainFrame)
-            secondaryFrame:SetClipsChildren(true)
             secondaryFrame:SetFrameStrata("MEDIUM")
             secondaryFrame:SetFrameLevel(10)
         end
