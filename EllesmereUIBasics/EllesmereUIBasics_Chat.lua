@@ -147,56 +147,60 @@ for _, event in ipairs(URL_EVENTS) do
     ChatFrame_AddMessageEventFilter(event, URLFilter)
 end
 
--- Hook SetItemRef to handle euiurl clicks → copy dialog
-local origSetItemRef = SetItemRef
-function SetItemRef(link, text, button, chatFrame)
+-- Hook SetItemRef via hooksecurefunc to handle euiurl clicks → copy dialog
+-- hooksecurefunc is a post-hook: the original runs first. For unknown link
+-- types like "euiurl:", the original is a no-op, so our post-hook can safely
+-- open the popup without taint concerns.
+local function ShowURLPopup(url)
+    local popup = _G["EBS_URLCopyDialog"]
+    if not popup then
+        popup = CreateFrame("Frame", "EBS_URLCopyDialog", UIParent, "BackdropTemplate")
+        popup:SetSize(450, 80)
+        popup:SetPoint("CENTER")
+        popup:SetFrameStrata("DIALOG")
+        popup:SetBackdrop({
+            bgFile   = "Interface\\ChatFrame\\ChatFrameBackground",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            edgeSize = 12, insets = { left = 3, right = 3, top = 3, bottom = 3 },
+        })
+        popup:SetBackdropColor(0.05, 0.05, 0.05, 0.95)
+        popup:SetBackdropBorderColor(0.3, 0.3, 0.3, 1)
+
+        local title = popup:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        title:SetPoint("TOPLEFT", 12, -8)
+        title:SetText("Copy URL (Ctrl+C)")
+        title:SetTextColor(0.7, 0.7, 0.7)
+
+        local eb = CreateFrame("EditBox", nil, popup, "InputBoxTemplate")
+        eb:SetSize(420, 20)
+        eb:SetPoint("BOTTOM", 0, 16)
+        eb:SetAutoFocus(true)
+        eb:SetScript("OnEscapePressed", function() popup:Hide() end)
+        eb:SetScript("OnEnterPressed", function() popup:Hide() end)
+        popup._editBox = eb
+
+        popup:SetScript("OnShow", function(self)
+            self._editBox:SetText(self._url or "")
+            self._editBox:HighlightText()
+            self._editBox:SetFocus()
+        end)
+        popup:EnableMouse(true)
+        popup:SetMovable(true)
+        popup:RegisterForDrag("LeftButton")
+        popup:SetScript("OnDragStart", popup.StartMoving)
+        popup:SetScript("OnDragStop", popup.StopMovingOrSizing)
+        tinsert(UISpecialFrames, "EBS_URLCopyDialog")
+    end
+    popup._url = url
+    popup:Show()
+end
+
+hooksecurefunc("SetItemRef", function(link)
     local url = link:match("^euiurl:(.+)")
     if url then
-        local popup = _G["EBS_URLCopyDialog"]
-        if not popup then
-            popup = CreateFrame("Frame", "EBS_URLCopyDialog", UIParent, "BackdropTemplate")
-            popup:SetSize(450, 80)
-            popup:SetPoint("CENTER")
-            popup:SetFrameStrata("DIALOG")
-            popup:SetBackdrop({
-                bgFile   = "Interface\\ChatFrame\\ChatFrameBackground",
-                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-                edgeSize = 12, insets = { left = 3, right = 3, top = 3, bottom = 3 },
-            })
-            popup:SetBackdropColor(0.05, 0.05, 0.05, 0.95)
-            popup:SetBackdropBorderColor(0.3, 0.3, 0.3, 1)
-
-            local title = popup:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            title:SetPoint("TOPLEFT", 12, -8)
-            title:SetText("Copy URL (Ctrl+C)")
-            title:SetTextColor(0.7, 0.7, 0.7)
-
-            local eb = CreateFrame("EditBox", nil, popup, "InputBoxTemplate")
-            eb:SetSize(420, 20)
-            eb:SetPoint("BOTTOM", 0, 16)
-            eb:SetAutoFocus(true)
-            eb:SetScript("OnEscapePressed", function() popup:Hide() end)
-            eb:SetScript("OnEnterPressed", function() popup:Hide() end)
-            popup._editBox = eb
-
-            popup:SetScript("OnShow", function(self)
-                self._editBox:SetText(self._url or "")
-                self._editBox:HighlightText()
-                self._editBox:SetFocus()
-            end)
-            popup:EnableMouse(true)
-            popup:SetMovable(true)
-            popup:RegisterForDrag("LeftButton")
-            popup:SetScript("OnDragStart", popup.StartMoving)
-            popup:SetScript("OnDragStop", popup.StopMovingOrSizing)
-            tinsert(UISpecialFrames, "EBS_URLCopyDialog")
-        end
-        popup._url = url
-        popup:Show()
-        return
+        ShowURLPopup(url)
     end
-    return origSetItemRef(link, text, button, chatFrame)
-end
+end)
 
 -------------------------------------------------------------------------------
 --  Timestamps
@@ -473,17 +477,21 @@ _G._EBS_ShowSearchDialog = ShowSearchDialog
 -- Search button on chat frames
 local searchButtons = {}
 
-local function CreateSearchButton(chatFrame)
-    if searchButtons[chatFrame] then return searchButtons[chatFrame] end
-    local btn = CreateFrame("Button", nil, chatFrame)
-    btn:SetSize(20, 20)
-    -- Position left of copy button if it exists
+local function AnchorSearchButton(btn, chatFrame)
+    btn:ClearAllPoints()
     local copyBtn = copyButtons[chatFrame]
-    if copyBtn then
+    if copyBtn and copyBtn:IsShown() then
         btn:SetPoint("RIGHT", copyBtn, "LEFT", -2, 0)
     else
         btn:SetPoint("TOPRIGHT", chatFrame, "TOPRIGHT", -2, -2)
     end
+end
+
+local function CreateSearchButton(chatFrame)
+    if searchButtons[chatFrame] then return searchButtons[chatFrame] end
+    local btn = CreateFrame("Button", nil, chatFrame)
+    btn:SetSize(20, 20)
+    AnchorSearchButton(btn, chatFrame)
     btn:SetNormalTexture("Interface\\Common\\UI-Searchbox-Icon")
     btn:SetHighlightTexture("Interface\\Common\\UI-Searchbox-Icon")
     btn:GetHighlightTexture():SetAlpha(0.3)
@@ -506,6 +514,7 @@ function _G._EBS_UpdateSearchButtons()
         if cf then
             if p.showSearchButton then
                 local btn = CreateSearchButton(cf)
+                AnchorSearchButton(btn, cf)
                 btn:Show()
             elseif searchButtons[cf] then
                 searchButtons[cf]:Hide()
