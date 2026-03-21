@@ -309,6 +309,12 @@ local TBB_DEFAULT_BAR = {
     stackThresholdMaxEnabled = false,
     stackThresholdMax = 10,
     stackThresholdTicks = "",
+    pandemicGlow = false,
+    pandemicGlowStyle = 1,
+    pandemicGlowColor = { r = 1, g = 1, b = 0 },
+    pandemicGlowLines = 8,
+    pandemicGlowThickness = 2,
+    pandemicGlowSpeed = 4,
 }
 ns.TBB_DEFAULT_BAR = TBB_DEFAULT_BAR
 
@@ -510,6 +516,14 @@ local function CreateTrackedBuffBarFrame(parent, idx)
     bdrContainer:SetFrameLevel(wrapFrame:GetFrameLevel() + 5)
     bdrContainer:Hide()
     wrapFrame._barBorder = bdrContainer
+
+    -- Pandemic glow overlay: covers the whole bar, above border
+    local panGlowOverlay = CreateFrame("Frame", nil, wrapFrame)
+    panGlowOverlay:SetAllPoints(wrapFrame)
+    panGlowOverlay:SetFrameLevel(wrapFrame:GetFrameLevel() + 6)
+    panGlowOverlay:SetAlpha(0)
+    panGlowOverlay:EnableMouse(false)
+    wrapFrame._pandemicGlowOverlay = panGlowOverlay
 
     -- Hidden Cooldown widget for DurationObject mirroring
     local cd = CreateFrame("Cooldown", nil, bar, "CooldownFrameTemplate")
@@ -1790,6 +1804,59 @@ function ns.UpdateTrackedBuffBarTimers()
                         if bar._timerText then bar._timerText:Hide() end
                         if bar._spark then bar._spark:Hide() end
                     end
+
+                    -- Pandemic glow on tracked buff bars
+                    if cfg.pandemicGlow and durObj and ns.cdmPandemicCurve then
+                        -- Determine glow target: icon if shown, otherwise the bar overlay
+                        local glowTarget
+                        if bar._icon and bar._icon:IsShown() then
+                            if not bar._pandemicGlowOnIcon then
+                                if not bar._icon._pandemicOverlay then
+                                    local ov = CreateFrame("Frame", nil, bar._icon)
+                                    ov:SetAllPoints(bar._icon)
+                                    ov:SetFrameLevel(bar._icon:GetFrameLevel() + 2)
+                                    ov:SetAlpha(0)
+                                    ov:EnableMouse(false)
+                                    bar._icon._pandemicOverlay = ov
+                                end
+                            end
+                            glowTarget = bar._icon._pandemicOverlay
+                            bar._pandemicGlowOnIcon = true
+                        else
+                            glowTarget = bar._pandemicGlowOverlay
+                            bar._pandemicGlowOnIcon = false
+                        end
+                        local style = cfg.pandemicGlowStyle or 1
+                        -- When glowing the bar overlay (no icon), only Pixel Glow (1)
+                        -- and Auto-Cast Shine (4) render properly on a wide rectangle.
+                        -- Fall back to Pixel Glow for icon-shaped styles.
+                        if not bar._pandemicGlowOnIcon and style ~= 1 and style ~= 4 then
+                            style = 1
+                        end
+                        if not bar._pandemicGlowActive or bar._pandemicGlowStyleIdx ~= style or bar._pandemicGlowTarget ~= glowTarget then
+                            if bar._pandemicGlowActive and bar._pandemicGlowTarget and bar._pandemicGlowTarget ~= glowTarget then
+                                ns.StopNativeGlow(bar._pandemicGlowTarget)
+                            end
+                            local c = cfg.pandemicGlowColor or { r = 1, g = 1, b = 0 }
+                            ns.StartNativeGlow(glowTarget, style, c.r or 1, c.g or 1, c.b or 0)
+                            bar._pandemicGlowActive = true
+                            bar._pandemicGlowStyleIdx = style
+                            bar._pandemicGlowTarget = glowTarget
+                        end
+                        glowTarget:SetAlpha(
+                            C_CurveUtil.EvaluateColorValueFromBoolean(
+                                durObj:IsZero(), 0,
+                                durObj:EvaluateRemainingPercent(ns.cdmPandemicCurve)))
+                        ns.activeCdmPandemicBars[bar] = durObj
+                    elseif bar._pandemicGlowActive then
+                        if bar._pandemicGlowTarget then
+                            ns.StopNativeGlow(bar._pandemicGlowTarget)
+                        end
+                        bar._pandemicGlowActive = false
+                        bar._pandemicGlowStyleIdx = nil
+                        bar._pandemicGlowTarget = nil
+                        ns.activeCdmPandemicBars[bar] = nil
+                    end
                 end
                 -- Feed threshold overlay each tick (secret-safe, no comparison)
                 FeedTBBThresholdOverlay(bar)
@@ -1803,6 +1870,13 @@ function ns.UpdateTrackedBuffBarTimers()
                 end
             else
                 -- Buff not active, hide the bar and clear state
+                if bar._pandemicGlowActive then
+                    if bar._pandemicGlowTarget then ns.StopNativeGlow(bar._pandemicGlowTarget) end
+                    bar._pandemicGlowActive = false
+                    bar._pandemicGlowStyleIdx = nil
+                    bar._pandemicGlowTarget = nil
+                    ns.activeCdmPandemicBars[bar] = nil
+                end
                 if bar:IsShown() then bar:Hide() end
                 if bar._stacksText then bar._stacksText:Hide() end
                 bar._resolvedAuraID = nil

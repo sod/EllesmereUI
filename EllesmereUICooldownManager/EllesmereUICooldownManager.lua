@@ -116,6 +116,22 @@ ECME_DESAT_CURVE:SetType(Enum.LuaCurveType.Step)
 ECME_DESAT_CURVE:AddPoint(0, 0)
 ECME_DESAT_CURVE:AddPoint(0.001, 1)
 
+-------------------------------------------------------------------------------
+--  Pandemic Glow Curve
+--  Step curve: returns 1 (visible) when remaining percent <= 30% (pandemic
+--  window), 0 when above. Mirrors the nameplate pandemic curve.
+-------------------------------------------------------------------------------
+if C_CurveUtil and C_CurveUtil.CreateCurve then
+    ns.cdmPandemicCurve = C_CurveUtil.CreateCurve()
+    ns.cdmPandemicCurve:SetType(Enum.LuaCurveType.Step)
+    ns.cdmPandemicCurve:AddPoint(0, 1)
+    ns.cdmPandemicCurve:AddPoint(0.3, 0)
+end
+
+-- Active pandemic icon/bar tracking: only these get alpha-ticked
+ns.activeCdmPandemicIcons = {}
+ns.activeCdmPandemicBars = {}
+
 -- Forward declarations for glow helpers (defined later, used by consolidated helpers)
 local StartNativeGlow, StopNativeGlow
 
@@ -728,19 +744,77 @@ local function ApplyTrinketCooldown(icon, slot, desatOnCD)
 end
 
 -------------------------------------------------------------------------------
---  Pandemic glow helper (buff bars only)
---  Shows pixel glow (or shape glow for shaped icons) when the Blizzard CDM
---  child frame's PandemicIcon is visible, indicating the buff is refreshable.
+--  Pandemic glow helpers (buff bars only)
+--  Uses C_CurveUtil step curve with DurationObject for secret-safe pandemic
+--  detection.  Glow becomes visible when remaining duration <= 30%.
+--  Priority: proc glow > pandemic glow > active state glow > buff glow.
 -------------------------------------------------------------------------------
-local function ApplyPandemicGlow(icon, blizzChild, barData)
-    -- Temporarily disabled -- pandemic glow feature is off for now.
-    -- To re-enable, restore the original function body.
+function ns.GetCdmPandemicColor(barData)
+    local c = barData.pandemicGlowColor
+    if c then return c.r or 1, c.g or 1, c.b or 0 end
+    return barData.pandemicR or 1, barData.pandemicG or 1, barData.pandemicB or 0
+end
+
+function ns.GetDurObjForIcon(icon)
+    local ch = icon._blizzChild
+    if not ch then return nil end
+    local auraID = ch.auraInstanceID
+    local auraUnit = ch.auraDataUnit or "player"
+    if auraID then
+        local ok, d = pcall(C_UnitAuras.GetAuraDuration, auraUnit, auraID)
+        if ok and d then return d end
+    end
+    return ns._ecmeDurObjCache and ns._ecmeDurObjCache[ch]
+end
+
+function ns.StopCdmPandemicGlow(icon)
+    ns.activeCdmPandemicIcons[icon] = nil
     if icon._pandemicGlowActive then
-        if not icon._procGlowActive and not icon._isActive then
+        if not icon._procGlowActive and not icon._isActive and not icon._buffGlowActive then
             StopNativeGlow(icon._glowOverlay)
         end
         icon._pandemicGlowActive = false
+        icon._pandemicGlowStyleIdx = nil
     end
+end
+
+local function ApplyPandemicGlow(icon, blizzChild, barData)
+    if not barData.pandemicGlow or not ns.cdmPandemicCurve then
+        ns.StopCdmPandemicGlow(icon)
+        return
+    end
+    -- Proc glow has highest priority
+    if icon._procGlowActive then
+        return
+    end
+    local durObj = ns.GetDurObjForIcon(icon)
+    if not durObj then
+        ns.StopCdmPandemicGlow(icon)
+        return
+    end
+    -- Start/restart glow only when style changes
+    local style = barData.pandemicGlowStyle or 1
+    if not icon._pandemicGlowActive or icon._pandemicGlowStyleIdx ~= style then
+        -- Stop any lower-priority glow on the overlay before starting pandemic
+        if icon._buffGlowActive then
+            StopNativeGlow(icon._glowOverlay)
+            icon._buffGlowActive = false
+            icon._buffGlowStyle = nil
+        end
+        if icon._isActive and icon._glowOverlay and icon._glowOverlay._glowActive then
+            StopNativeGlow(icon._glowOverlay)
+        end
+        local cr, cg, cb = ns.GetCdmPandemicColor(barData)
+        StartNativeGlow(icon._glowOverlay, style, cr, cg, cb)
+        icon._pandemicGlowActive = true
+        icon._pandemicGlowStyleIdx = style
+    end
+    -- Secret-safe alpha update: glow visible only in pandemic window
+    icon._glowOverlay:SetAlpha(
+        C_CurveUtil.EvaluateColorValueFromBoolean(
+            durObj:IsZero(), 0,
+            durObj:EvaluateRemainingPercent(ns.cdmPandemicCurve)))
+    ns.activeCdmPandemicIcons[icon] = true
 end
 
 -------------------------------------------------------------------------------
@@ -753,15 +827,15 @@ local function ApplyActiveAnimation(icon, auraHandled, barData, barKey, activeAn
         if activeAnim ~= "none" and activeAnim ~= "hideActive" then
             icon._cooldown:SetSwipeColor(animR, animG, animB, swAlpha)
             local glowIdx = tonumber(activeAnim)
-            -- Don't overwrite proc glow with active state glow
-            if glowIdx and icon._glowOverlay and not icon._procGlowActive then
+            -- Don't overwrite proc glow or pandemic glow with active state glow
+            if glowIdx and icon._glowOverlay and not icon._procGlowActive and not icon._pandemicGlowActive then
                 StartNativeGlow(icon._glowOverlay, glowIdx, animR, animG, animB)
             end
         end
     elseif (skipActiveAnim or not auraHandled) and icon._isActive then
         icon._cooldown:SetSwipeColor(0, 0, 0, swAlpha)
-        -- Don't stop glow if proc glow is active (it owns the overlay)
-        if icon._glowOverlay and not icon._procGlowActive then
+        -- Don't stop glow if proc or pandemic glow is active (they own the overlay)
+        if icon._glowOverlay and not icon._procGlowActive and not icon._pandemicGlowActive then
             StopNativeGlow(icon._glowOverlay)
         end
     end
@@ -1020,6 +1094,12 @@ local DEFAULTS = {
                     keybindSize = 10, keybindOffsetX = 2, keybindOffsetY = -2,
                     keybindR = 1, keybindG = 1, keybindB = 1, keybindA = 0.9,
                     outOfRangeOverlay = false,
+                    pandemicGlow = false,
+                    pandemicGlowStyle = 1,
+                    pandemicGlowColor = { r = 1, g = 1, b = 0 },
+                    pandemicGlowLines = 8,
+                    pandemicGlowThickness = 2,
+                    pandemicGlowSpeed = 4,
                 },
                 {
                     key = "utility", name = "Utility", enabled = true,
@@ -1048,6 +1128,12 @@ local DEFAULTS = {
                     keybindSize = 10, keybindOffsetX = 2, keybindOffsetY = -2,
                     keybindR = 1, keybindG = 1, keybindB = 1, keybindA = 0.9,
                     outOfRangeOverlay = false,
+                    pandemicGlow = false,
+                    pandemicGlowStyle = 1,
+                    pandemicGlowColor = { r = 1, g = 1, b = 0 },
+                    pandemicGlowLines = 8,
+                    pandemicGlowThickness = 2,
+                    pandemicGlowSpeed = 4,
                 },
                 {
                     key = "buffs", name = "Buffs", enabled = true,
@@ -1077,7 +1163,11 @@ local DEFAULTS = {
                     keybindR = 1, keybindG = 1, keybindB = 1, keybindA = 0.9,
                     outOfRangeOverlay = false,
                     pandemicGlow = false,
-                    pandemicR = 1, pandemicG = 1, pandemicB = 0,
+                    pandemicGlowStyle = 1,
+                    pandemicGlowColor = { r = 1, g = 1, b = 0 },
+                    pandemicGlowLines = 8,
+                    pandemicGlowThickness = 2,
+                    pandemicGlowSpeed = 4,
                 },
             },
         },
@@ -1990,6 +2080,47 @@ end
 ns.StartNativeGlow = StartNativeGlow
 ns.StopNativeGlow = StopNativeGlow
 
+-------------------------------------------------------------------------------
+--  Pandemic glow alpha-only tick: updates glow alpha for CDM icons and tracked
+--  buff bars that have active pandemic glows. Fires every 0.2s.
+-------------------------------------------------------------------------------
+do
+    local accum = 0
+    CreateFrame("Frame"):SetScript("OnUpdate", function(_, elapsed)
+        accum = accum + elapsed
+        if accum < 0.2 then return end
+        accum = 0
+        if not ns.cdmPandemicCurve then return end
+        for icon in pairs(ns.activeCdmPandemicIcons) do
+            local durObj = ns.GetDurObjForIcon(icon)
+            if durObj and icon._pandemicGlowActive and icon._glowOverlay then
+                icon._glowOverlay:SetAlpha(
+                    C_CurveUtil.EvaluateColorValueFromBoolean(
+                        durObj:IsZero(), 0,
+                        durObj:EvaluateRemainingPercent(ns.cdmPandemicCurve)))
+            else
+                ns.StopCdmPandemicGlow(icon)
+            end
+        end
+        for bar, durObj in pairs(ns.activeCdmPandemicBars) do
+            local target = bar._pandemicGlowTarget
+            if durObj and target then
+                target:SetAlpha(
+                    C_CurveUtil.EvaluateColorValueFromBoolean(
+                        durObj:IsZero(), 0,
+                        durObj:EvaluateRemainingPercent(ns.cdmPandemicCurve)))
+            else
+                if bar._pandemicGlowActive and target then
+                    StopNativeGlow(target)
+                end
+                bar._pandemicGlowActive = false
+                bar._pandemicGlowTarget = nil
+                ns.activeCdmPandemicBars[bar] = nil
+            end
+        end
+    end)
+end
+
 -- Our bar frames (keyed by bar key)
 local cdmBarFrames = {}
 -- Icon frames per bar (keyed by bar key, array of icon frames)
@@ -2106,6 +2237,10 @@ local function ShowProcGlow(icon, cr, cg, cb)
     if not icon or not icon._glowOverlay then return end
     -- Don't double-start if already showing proc glow
     if icon._procGlowActive then return end
+    -- Stop pandemic glow if active (proc glow takes priority)
+    if icon._pandemicGlowActive then
+        ns.StopCdmPandemicGlow(icon)
+    end
     -- If active state glow is running, stop it first (proc glow takes priority)
     if icon._isActive and icon._glowOverlay._glowActive then
         StopNativeGlow(icon._glowOverlay)
@@ -4327,15 +4462,8 @@ local function UpdateCustomBarIcons(barKey)
 
                 ApplyActiveAnimation(ourIcon, auraHandled, barData, barKey, activeAnim, animR, animG, animB, swAlpha)
 
-                -- Pandemic glow (buff bars only)
-                if isBuffBarForOverride then
-                    ApplyPandemicGlow(ourIcon, ourIcon._blizzChild, barData)
-                elseif ourIcon._pandemicGlowActive then
-                    if not ourIcon._procGlowActive and not ourIcon._isActive then
-                        StopNativeGlow(ourIcon._glowOverlay)
-                    end
-                    ourIcon._pandemicGlowActive = false
-                end
+                -- Pandemic glow
+                ApplyPandemicGlow(ourIcon, ourIcon._blizzChild, barData)
 
                 -- Out-of-range overlay (skip buff bars -- buffs don't target enemies)
                 if not isBuffBarForOverride then
@@ -4445,7 +4573,9 @@ local function UpdateCustomBarIcons(barKey)
             StopNativeGlow(ic._glowOverlay)
             ic._procGlowActive = false
         end
+        ns.activeCdmPandemicIcons[ic] = nil
         ic._pandemicGlowActive = false
+        ic._pandemicGlowStyleIdx = nil
         ic:Hide()
     end
 
@@ -4745,15 +4875,8 @@ UpdateCDMBarIcons = function(barKey)
             -- Active state animation (consolidated)
             ApplyActiveAnimation(ourIcon, auraHandled, barData, barKey, activeAnim, animR, animG, animB, swAlpha)
 
-            -- Pandemic glow (buff bars only)
-            if isBuffBar then
-                ApplyPandemicGlow(ourIcon, blizzIcon, barData)
-            elseif ourIcon._pandemicGlowActive then
-                if not ourIcon._procGlowActive and not ourIcon._isActive then
-                    StopNativeGlow(ourIcon._glowOverlay)
-                end
-                ourIcon._pandemicGlowActive = false
-            end
+            -- Pandemic glow
+            ApplyPandemicGlow(ourIcon, blizzIcon, barData)
 
             -- Out-of-range overlay (skip buff bars)
             if not isBuffBar then
@@ -4832,7 +4955,9 @@ UpdateCDMBarIcons = function(barKey)
             StopNativeGlow(ic._glowOverlay)
             ic._procGlowActive = false
         end
+        ns.activeCdmPandemicIcons[ic] = nil
         ic._pandemicGlowActive = false
+        ic._pandemicGlowStyleIdx = nil
         if ic:IsShown() then
             if not ic._hideGraceStart then
                 ic._hideGraceStart = GetTime()
@@ -5631,15 +5756,8 @@ local function UpdateTrackedBarIcons(barKey)
                 -- Store Blizzard child mapping so proc glow hooks can find our icon
                 ourIcon._blizzChild = blizzChild
 
-                -- Pandemic glow (buff bars only)
-                if isBuffBarForOvr then
-                    ApplyPandemicGlow(ourIcon, blizzChild, barData)
-                elseif ourIcon._pandemicGlowActive then
-                    if not ourIcon._procGlowActive and not ourIcon._isActive then
-                        StopNativeGlow(ourIcon._glowOverlay)
-                    end
-                    ourIcon._pandemicGlowActive = false
-                end
+                -- Pandemic glow
+                ApplyPandemicGlow(ourIcon, blizzChild, barData)
 
                 -- Untracked overlay: red tint for spells not in Blizzard CDM
                 -- Only applies to spells that exist in the CDM category system (have a cdID).
@@ -5727,7 +5845,9 @@ local function UpdateTrackedBarIcons(barKey)
             StopNativeGlow(ic._glowOverlay)
             ic._procGlowActive = false
         end
+        ns.activeCdmPandemicIcons[ic] = nil
         ic._pandemicGlowActive = false
+        ic._pandemicGlowStyleIdx = nil
         if ic._untrackedOverlay then ic._untrackedOverlay:Hide() end
         ic._isUntracked = false
         ic:Hide()
@@ -7277,7 +7397,11 @@ function ns.AddCDMBar(barType, name, numRows)
         -- Custom bars use a spell list instead of mirroring Blizzard
         outOfRangeOverlay = false,
         pandemicGlow = false,
-        pandemicR = 1, pandemicG = 1, pandemicB = 0,
+        pandemicGlowStyle = 1,
+        pandemicGlowColor = { r = 1, g = 1, b = 0 },
+        pandemicGlowLines = 8,
+        pandemicGlowThickness = 2,
+        pandemicGlowSpeed = 4,
     }
     -- Initialize spell data in the global store for this custom bar
     local sd = ns.GetBarSpellData(key)
@@ -7526,6 +7650,23 @@ end
 -------------------------------------------------------------------------------
 function ECME:OnInitialize()
     self.db = EllesmereUI.Lite.NewDB("EllesmereUICooldownManagerDB", DEFAULTS, true)
+
+    -- Migrate old pandemicR/G/B flat keys to pandemicGlowColor table
+    do
+        local p = self.db and self.db.profile
+        if p and p.cdmBars and p.cdmBars.bars then
+            for _, barData in ipairs(p.cdmBars.bars) do
+                if barData.pandemicR and not barData.pandemicGlowColor then
+                    barData.pandemicGlowColor = {
+                        r = barData.pandemicR or 1,
+                        g = barData.pandemicG or 1,
+                        b = barData.pandemicB or 0,
+                    }
+                    barData.pandemicGlowStyle = barData.pandemicGlowStyle or 1
+                end
+            end
+        end
+    end
 
     -- Save spec profile before StripDefaults runs on logout
     EllesmereUI.Lite.RegisterPreLogout(function()

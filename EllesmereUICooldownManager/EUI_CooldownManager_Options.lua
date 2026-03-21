@@ -157,6 +157,296 @@ initFrame:SetScript("OnEvent", function(self)
         return labels, order
     end
 
+    ---------------------------------------------------------------------------
+    --  Pandemic Glow shared helpers (used by CDM Bars + TBB options pages)
+    ---------------------------------------------------------------------------
+
+    -- Pandemic glow style dropdown values (excludes ShapeGlow, adds "None")
+    local PAN_GLOW_VALUES = { [0] = "None" }
+    local PAN_GLOW_ORDER  = { 0 }
+    if ns.GLOW_STYLES then
+        for i, entry in ipairs(ns.GLOW_STYLES) do
+            if not entry.shapeGlow then
+                PAN_GLOW_VALUES[i] = entry.name
+                PAN_GLOW_ORDER[#PAN_GLOW_ORDER + 1] = i
+            end
+        end
+    end
+
+    -- Get nameplate profile from central DB
+    local function GetNPProfile()
+        if not EllesmereUIDB or not EllesmereUIDB.profiles then return nil end
+        local pName = EllesmereUIDB.activeProfile or "Default"
+        local prof = EllesmereUIDB.profiles[pName]
+        return prof and prof.addons and prof.addons.EllesmereUINameplates
+    end
+
+    -- Copy pandemic fields from one table to another
+    local function CopyPandemicFields(src, dst)
+        dst.pandemicGlow = src.pandemicGlow
+        dst.pandemicGlowStyle = src.pandemicGlowStyle
+        dst.pandemicGlowColor = src.pandemicGlowColor and CopyTable(src.pandemicGlowColor) or nil
+        dst.pandemicGlowLines = src.pandemicGlowLines
+        dst.pandemicGlowThickness = src.pandemicGlowThickness
+        dst.pandemicGlowSpeed = src.pandemicGlowSpeed
+    end
+
+    -- Compare pandemic fields between two tables
+    local function PandemicFieldsMatch(a, b)
+        if (a.pandemicGlow or false) ~= (b.pandemicGlow or false) then return false end
+        if (a.pandemicGlowStyle or 1) ~= (b.pandemicGlowStyle or 1) then return false end
+        local ac = a.pandemicGlowColor or {}
+        local bc = b.pandemicGlowColor or {}
+        if (ac.r or 1) ~= (bc.r or 1) or (ac.g or 1) ~= (bc.g or 1) or (ac.b or 0) ~= (bc.b or 0) then return false end
+        if (a.pandemicGlowLines or 8) ~= (b.pandemicGlowLines or 8) then return false end
+        if (a.pandemicGlowThickness or 2) ~= (b.pandemicGlowThickness or 2) then return false end
+        if (a.pandemicGlowSpeed or 4) ~= (b.pandemicGlowSpeed or 4) then return false end
+        return true
+    end
+
+    -- Apply pandemic settings to all targets (NP, CDM bars, TBB bars) except skipKey
+    local function ApplyPandemicToAll(src, skipCdmKey, skipTbbIdx)
+        local np = GetNPProfile()
+        if np then CopyPandemicFields(src, np) end
+        local pdb = DB()
+        if pdb and pdb.cdmBars and pdb.cdmBars.bars then
+            for _, b in ipairs(pdb.cdmBars.bars) do
+                if b.key ~= skipCdmKey then CopyPandemicFields(src, b) end
+            end
+        end
+        local tbb = ns.GetTrackedBuffBars and ns.GetTrackedBuffBars()
+        if tbb and tbb.bars then
+            for i, tb in ipairs(tbb.bars) do
+                if i ~= skipTbbIdx then CopyPandemicFields(src, tb) end
+            end
+        end
+        ns.BuildAllCDMBars()
+        if ns.BuildTrackedBuffBars then ns.BuildTrackedBuffBars() end
+        if _G._ENP_RefreshAllSettings then _G._ENP_RefreshAllSettings() end
+        Refresh()
+    end
+
+    -- Check if pandemic settings are synced across all targets
+    local function IsPandemicSyncedEverywhere(src, skipCdmKey, skipTbbIdx)
+        local np = GetNPProfile()
+        if np and not PandemicFieldsMatch(src, np) then return false end
+        local pdb = DB()
+        if pdb and pdb.cdmBars and pdb.cdmBars.bars then
+            for _, b in ipairs(pdb.cdmBars.bars) do
+                if b.key ~= skipCdmKey and not PandemicFieldsMatch(src, b) then return false end
+            end
+        end
+        local tbb = ns.GetTrackedBuffBars and ns.GetTrackedBuffBars()
+        if tbb and tbb.bars then
+            for i, tb in ipairs(tbb.bars) do
+                if i ~= skipTbbIdx and not PandemicFieldsMatch(src, tb) then return false end
+            end
+        end
+        return true
+    end
+
+    -- Create a pandemic glow preview icon in a DualRow right-half
+    local function BuildPandemicPreview(row, isOffFn, getDataFn)
+        local SIDE_PAD = 20
+        local iconSize = 36
+        local iconFrame = CreateFrame("Frame", nil, row)
+        PP.Size(iconFrame, iconSize, iconSize)
+        PP.Point(iconFrame, "RIGHT", row, "RIGHT", -SIDE_PAD, 0)
+
+        local iconTex = iconFrame:CreateTexture(nil, "ARTWORK")
+        iconTex:SetAllPoints()
+        iconTex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        iconTex:SetTexture(136197)
+
+        local onePx = PP.Scale(1)
+        for _, info in ipairs({
+            {"TOPLEFT", "TOPRIGHT", true}, {"BOTTOMLEFT", "BOTTOMRIGHT", true},
+            {"TOPLEFT", "BOTTOMLEFT", false}, {"TOPRIGHT", "BOTTOMRIGHT", false},
+        }) do
+            local t = iconFrame:CreateTexture(nil, "OVERLAY", nil, 7)
+            t:SetColorTexture(0, 0, 0, 1)
+            if t.SetSnapToPixelGrid then t:SetSnapToPixelGrid(false); t:SetTexelSnappingBias(0) end
+            PP.Point(t, info[1], iconFrame, info[1], 0, 0)
+            PP.Point(t, info[2], iconFrame, info[2], 0, 0)
+            if info[3] then t:SetHeight(onePx) else t:SetWidth(onePx) end
+        end
+
+        local glowOvr = CreateFrame("Frame", nil, iconFrame)
+        glowOvr:SetAllPoints(iconFrame)
+        glowOvr:SetFrameLevel(iconFrame:GetFrameLevel() + 2)
+        glowOvr:EnableMouse(false)
+
+        local function RefreshPreview()
+            EllesmereUI.Glows.StopAllGlows(glowOvr)
+            if isOffFn() then
+                iconFrame:SetAlpha(0.3)
+                return
+            end
+            iconFrame:SetAlpha(1)
+            local bd = getDataFn()
+            if not bd then return end
+            local style = bd.pandemicGlowStyle or 1
+            local c = bd.pandemicGlowColor or { r = 1, g = 1, b = 0 }
+            ns.StartNativeGlow(glowOvr, style, c.r or 1, c.g or 1, c.b or 0)
+        end
+        RefreshPreview()
+
+        local previewLabel = ({ row._rightRegion:GetRegions() })[1]
+        EllesmereUI.RegisterWidgetRefresh(function()
+            local off = isOffFn()
+            iconFrame:SetAlpha(off and 0.3 or 1)
+            if previewLabel and previewLabel.SetAlpha then
+                previewLabel:SetAlpha(off and 0.3 or 1)
+            end
+            RefreshPreview()
+        end)
+
+        row._refreshPreview = RefreshPreview
+    end
+
+    -- Create a pixel glow cog popup for pandemic settings
+    -- getDataFn: returns the settings table; refreshFn: called after changes
+    local _sharedPgPopup, _sharedPgPopupOwner
+    local function ShowPandemicPixelGlowPopup(anchorBtn, getDataFn, refreshFn)
+        if not _sharedPgPopup then
+            local SolidTex   = EllesmereUI.SolidTex
+            local MakeBorder = EllesmereUI.MakeBorder
+            local MakeFont   = EllesmereUI.MakeFont
+            local BuildSliderCore = EllesmereUI.BuildSliderCore
+            local BORDER_COLOR   = EllesmereUI.BORDER_COLOR
+
+            local SIDE_PAD = 14; local TOP_PAD = 14
+            local TITLE_H = 11; local TITLE_GAP = 10; local GAP = 10
+            local ROW_H = 24; local POPUP_INPUT_A = 0.55
+            local INPUT_W = 34; local SLIDER_INPUT_GAP = 8; local LABEL_SLIDER_GAP = 12
+            local MIN_POPUP_W = 180
+
+            local totalH = TOP_PAD + TITLE_H + TITLE_GAP + GAP + ROW_H + GAP + ROW_H + GAP + ROW_H + TOP_PAD
+
+            local pf = CreateFrame("Frame", nil, UIParent)
+            pf:SetSize(260, totalH); pf:SetFrameStrata("DIALOG"); pf:SetFrameLevel(200)
+            pf:EnableMouse(true); pf:Hide()
+
+            local bg = SolidTex(pf, "BACKGROUND", 0.06, 0.08, 0.10, 0.95); bg:SetAllPoints()
+            MakeBorder(pf, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.15)
+
+            local titleFS = MakeFont(pf, 11, "", 1, 1, 1); titleFS:SetAlpha(0.7)
+            titleFS:SetPoint("TOP", pf, "TOP", 0, -TOP_PAD); titleFS:SetText("Pixel Glow Settings")
+
+            local tmpFS = pf:CreateFontString(nil, "OVERLAY")
+            tmpFS:SetFont(EllesmereUI.EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 11, "")
+            local maxLblW = 0
+            for _, txt in ipairs({"Lines", "Thickness", "Speed"}) do
+                tmpFS:SetText(txt); local w = tmpFS:GetStringWidth(); if w > maxLblW then maxLblW = w end
+            end
+            tmpFS:Hide(); if maxLblW < 10 then maxLblW = 60 end
+
+            local SLIDER_LEFT = SIDE_PAD + maxLblW + LABEL_SLIDER_GAP
+            local SLIDER_W = math.max(80, 260 - SLIDER_LEFT - SLIDER_INPUT_GAP - INPUT_W - SIDE_PAD)
+            local POPUP_W = math.max(MIN_POPUP_W, SLIDER_LEFT + SLIDER_W + SLIDER_INPUT_GAP + INPUT_W + SIDE_PAD)
+            pf:SetWidth(POPUP_W)
+
+            local r1Y = -(TOP_PAD + TITLE_H + TITLE_GAP + GAP)
+            local lbl1 = MakeFont(pf, 11, nil, 1, 1, 1); lbl1:SetAlpha(0.6)
+            lbl1:SetText("Lines"); lbl1:SetPoint("TOPLEFT", pf, "TOPLEFT", SIDE_PAD, r1Y)
+            local t1, v1 = BuildSliderCore(pf, SLIDER_W, 4, 12, INPUT_W, ROW_H, 11, POPUP_INPUT_A,
+                2, 16, 1,
+                function() local d = pf._getData(); return d and d.pandemicGlowLines or 8 end,
+                function(v) local d = pf._getData(); if d then d.pandemicGlowLines = v end; if pf._refresh then pf._refresh() end end, true)
+            t1:SetPoint("TOPLEFT", pf, "TOPLEFT", SLIDER_LEFT, r1Y - 2)
+            v1:ClearAllPoints(); v1:SetPoint("TOPRIGHT", pf, "TOPRIGHT", -SIDE_PAD, r1Y)
+
+            local r2Y = r1Y - ROW_H - GAP
+            local lbl2 = MakeFont(pf, 11, nil, 1, 1, 1); lbl2:SetAlpha(0.6)
+            lbl2:SetText("Thickness"); lbl2:SetPoint("TOPLEFT", pf, "TOPLEFT", SIDE_PAD, r2Y)
+            local t2, v2 = BuildSliderCore(pf, SLIDER_W, 4, 12, INPUT_W, ROW_H, 11, POPUP_INPUT_A,
+                1, 4, 1,
+                function() local d = pf._getData(); return d and d.pandemicGlowThickness or 2 end,
+                function(v) local d = pf._getData(); if d then d.pandemicGlowThickness = v end; if pf._refresh then pf._refresh() end end, true)
+            t2:SetPoint("TOPLEFT", pf, "TOPLEFT", SLIDER_LEFT, r2Y - 2)
+            v2:ClearAllPoints(); v2:SetPoint("TOPRIGHT", pf, "TOPRIGHT", -SIDE_PAD, r2Y)
+
+            local r3Y = r2Y - ROW_H - GAP
+            local lbl3 = MakeFont(pf, 11, nil, 1, 1, 1); lbl3:SetAlpha(0.6)
+            lbl3:SetText("Speed"); lbl3:SetPoint("TOPLEFT", pf, "TOPLEFT", SIDE_PAD, r3Y)
+            local t3, v3 = BuildSliderCore(pf, SLIDER_W, 4, 12, INPUT_W, ROW_H, 11, POPUP_INPUT_A,
+                1, 8, 1,
+                function() local d = pf._getData(); local p = d and d.pandemicGlowSpeed or 4; return 9 - p end,
+                function(v) local d = pf._getData(); if d then d.pandemicGlowSpeed = 9 - v end; if pf._refresh then pf._refresh() end end, true)
+            t3:SetPoint("TOPLEFT", pf, "TOPLEFT", SLIDER_LEFT, r3Y - 2)
+            v3:ClearAllPoints(); v3:SetPoint("TOPRIGHT", pf, "TOPRIGHT", -SIDE_PAD, r3Y)
+
+            local wasDown = false
+            pf:SetScript("OnHide", function(self)
+                self:SetScript("OnUpdate", nil)
+                if _sharedPgPopupOwner then _sharedPgPopupOwner:SetAlpha(0.4) end
+                _sharedPgPopupOwner = nil
+            end)
+            pf._clickOutside = function(self, _)
+                local down = IsMouseButtonDown("LeftButton")
+                if down and not wasDown then
+                    if not self:IsMouseOver() and not (_sharedPgPopupOwner and _sharedPgPopupOwner:IsMouseOver()) then
+                        self:Hide()
+                    end
+                end
+                wasDown = down
+            end
+            if EllesmereUI._mainFrame then
+                EllesmereUI._mainFrame:HookScript("OnHide", function()
+                    if pf:IsShown() then pf:Hide() end
+                end)
+            end
+            _sharedPgPopup = pf
+        end
+
+        if _sharedPgPopupOwner == anchorBtn and _sharedPgPopup:IsShown() then
+            _sharedPgPopup:Hide(); return
+        end
+        -- Bind data source and refresh callback for this invocation
+        _sharedPgPopup._getData = getDataFn
+        _sharedPgPopup._refresh = refreshFn
+        _sharedPgPopupOwner = anchorBtn
+
+        _sharedPgPopup:ClearAllPoints()
+        _sharedPgPopup:SetPoint("BOTTOM", anchorBtn, "TOP", 0, 6)
+        _sharedPgPopup:SetAlpha(0); _sharedPgPopup:Show()
+        local elapsed = 0
+        _sharedPgPopup:SetScript("OnUpdate", function(self, dt)
+            elapsed = elapsed + dt; local t = math.min(elapsed / 0.15, 1)
+            self:SetAlpha(t); self:ClearAllPoints()
+            self:SetPoint("BOTTOM", anchorBtn, "TOP", 0, 6 + (-8 * (1 - t)))
+            if t >= 1 then self:SetScript("OnUpdate", self._clickOutside) end
+        end)
+    end
+
+    -- Build a pandemic glow cog button that opens the shared pixel glow popup
+    local function BuildPandemicCogButton(row, isAntsOffFn, getDataFn, refreshFn)
+        local leftRgn = row._leftRegion
+        local btn = CreateFrame("Button", nil, leftRgn)
+        btn:SetSize(26, 26)
+        btn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -9, 0)
+        btn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
+        btn:SetAlpha(0.4)
+        local cogTex = btn:CreateTexture(nil, "OVERLAY")
+        cogTex:SetAllPoints(); cogTex:SetTexture(EllesmereUI.COGS_ICON)
+        btn:SetScript("OnEnter", function(self)
+            if isAntsOffFn() then
+                EllesmereUI.ShowWidgetTooltip(self, "This option requires Pixel Glow to be the selected glow type")
+            else self:SetAlpha(0.7) end
+        end)
+        btn:SetScript("OnLeave", function(self)
+            EllesmereUI.HideWidgetTooltip()
+            if _sharedPgPopupOwner ~= btn then self:SetAlpha(isAntsOffFn() and 0.15 or 0.4) end
+        end)
+        btn:SetScript("OnClick", function(self)
+            if isAntsOffFn() then return end
+            ShowPandemicPixelGlowPopup(self, getDataFn, refreshFn)
+        end)
+        EllesmereUI.RegisterWidgetRefresh(function()
+            if _sharedPgPopupOwner ~= btn then btn:SetAlpha(isAntsOffFn() and 0.15 or 0.4) end
+        end)
+    end
+
     -- Get the icon texture from a real Blizzard action button
     local function GetActionButtonIcon(barIdx, slot)
         local prefix = BAR_BUTTON_PREFIXES[barIdx]
@@ -2707,6 +2997,86 @@ initFrame:SetScript("OnEvent", function(self)
             cogBtn:SetScript("OnClick", function(self) cogShow(self) end)
             EllesmereUI.RegisterWidgetRefresh(UpdateThreshCogState)
             UpdateThreshCogState()
+        end
+
+        -- Pandemic Glow (tracked buff bars)
+        do
+            local function tbbPandemicOff()
+                local bd = SelectedTBB(); return not bd or bd.pandemicGlow ~= true
+            end
+            local function tbbAntsOff()
+                if tbbPandemicOff() then return true end
+                local bd = SelectedTBB()
+                return not bd or type(bd.pandemicGlowStyle) ~= "number" or bd.pandemicGlowStyle ~= 1
+            end
+
+            local tbbPanRow
+            tbbPanRow, h = W:DualRow(parent, y,
+                { type = "dropdown", text = "Pandemic Glow",
+                  values = PAN_GLOW_VALUES, order = PAN_GLOW_ORDER,
+                  getValue = function()
+                      local bd = SelectedTBB(); if not bd then return 0 end
+                      if bd.pandemicGlow ~= true then return 0 end
+                      return bd.pandemicGlowStyle or 1
+                  end,
+                  setValue = function(v)
+                      local bd = SelectedTBB(); if not bd then return end
+                      if v == 0 then bd.pandemicGlow = false
+                      else bd.pandemicGlow = true; bd.pandemicGlowStyle = v end
+                      RefreshTBB()
+                      if tbbPanRow and tbbPanRow._refreshPreview then tbbPanRow._refreshPreview() end
+                      C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
+                  end,
+                  tooltip = "Show a glow on the bar when the remaining duration is in the pandemic window (last 30%)" },
+                { type = "label", text = "Pandemic Glow Preview" });  y = y - h
+
+            BuildPandemicPreview(tbbPanRow, tbbPandemicOff, SelectedTBB)
+
+            -- Inline color swatch
+            do
+                local tbbLR = tbbPanRow._leftRegion
+                local tbbCtrl = tbbLR and tbbLR._control
+                if tbbCtrl and EllesmereUI.BuildColorSwatch then
+                    local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
+                        tbbLR, tbbPanRow:GetFrameLevel() + 3,
+                        function()
+                            local bd = SelectedTBB(); local c = bd and bd.pandemicGlowColor
+                            if c then return c.r or 1, c.g or 1, c.b or 0 end; return 1, 1, 0
+                        end,
+                        function(r, g, b)
+                            local bd = SelectedTBB(); if not bd then return end
+                            bd.pandemicGlowColor = { r = r, g = g, b = b }; RefreshTBB()
+                            if tbbPanRow._refreshPreview then tbbPanRow._refreshPreview() end
+                        end, nil, 20)
+                    PP.Point(swatch, "RIGHT", tbbCtrl, "LEFT", -12, 0)
+                    tbbLR._lastInline = swatch
+                    EllesmereUI.RegisterWidgetRefresh(function()
+                        local off = tbbPandemicOff()
+                        swatch:SetAlpha(off and 0.15 or 1); swatch:EnableMouse(not off)
+                        if updateSwatch then updateSwatch() end
+                    end)
+                    swatch:SetAlpha(tbbPandemicOff() and 0.15 or 1)
+                    swatch:EnableMouse(not tbbPandemicOff())
+                end
+            end
+
+            BuildPandemicCogButton(tbbPanRow, tbbAntsOff, SelectedTBB, function() RefreshTBB() end)
+
+            -- Apply All
+            if EllesmereUI.BuildSyncIcon then
+                EllesmereUI.BuildSyncIcon({
+                    region = tbbPanRow._leftRegion,
+                    tooltip = "Apply Pandemic Glow settings to all (Nameplates, CDM Bars, Tracking Bars)",
+                    isSynced = function()
+                        local src = SelectedTBB(); if not src then return true end
+                        return IsPandemicSyncedEverywhere(src, nil, _tbbSelectedBar)
+                    end,
+                    onClick = function()
+                        local src = SelectedTBB(); if not src then return end
+                        ApplyPandemicToAll(src, nil, _tbbSelectedBar)
+                    end,
+                })
+            end
         end
 
         -- Border Style (slider + inline swatch) | Background Color
@@ -6320,44 +6690,80 @@ initFrame:SetScript("OnEvent", function(self)
             end
         end
 
-        -- Pandemic Glow (buff bars only)
-        if barData.barType == "buffs" or barData.key == "buffs" then
-            local panRow
-            panRow, h = W:DualRow(parent, y,
-                { type="toggle", text="Pandemic Glow",
-                  getValue=function() return BD().pandemicGlow ~= false end,
-                  setValue=function(v) BD().pandemicGlow = v; Refresh(); EllesmereUI:RefreshPage() end,
-                  tooltip="Show a glow on buff icons when the remaining duration is in the pandemic window (refreshable)" },
-                { type="label", text="" });  y = y - h
+        -- Pandemic Glow (all bar types)
+        do
+            local function pandemicOff() return BD().pandemicGlow ~= true end
+            local function antsOff()
+                if pandemicOff() then return true end
+                local raw = BD().pandemicGlowStyle
+                return type(raw) ~= "number" or raw ~= 1
+            end
+
+            local panGlowRow
+            panGlowRow, h = W:DualRow(parent, y,
+                { type="dropdown", text="Pandemic Glow",
+                  values=PAN_GLOW_VALUES, order=PAN_GLOW_ORDER,
+                  getValue=function()
+                      if pandemicOff() then return 0 end
+                      local raw = BD().pandemicGlowStyle
+                      if type(raw) ~= "number" then return 1 end
+                      return raw
+                  end,
+                  setValue=function(v)
+                      if v == 0 then BD().pandemicGlow = false
+                      else BD().pandemicGlow = true; BD().pandemicGlowStyle = v end
+                      ns.BuildAllCDMBars(); Refresh()
+                      if panGlowRow and panGlowRow._refreshPreview then panGlowRow._refreshPreview() end
+                      C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
+                  end,
+                  tooltip="Show a glow on icons when the remaining duration is in the pandemic window (last 30%)" },
+                { type="label", text="Pandemic Glow Preview" });  y = y - h
+
+            BuildPandemicPreview(panGlowRow, pandemicOff, BD)
+
+            -- Inline color swatch
             do
-                local rgn = panRow._leftRegion
-                local ctrl = rgn and rgn._control
+                local leftRgn = panGlowRow._leftRegion
+                local ctrl = leftRgn and leftRgn._control
                 if ctrl and EllesmereUI.BuildColorSwatch then
-                    local panSwatch, updatePanSwatch = EllesmereUI.BuildColorSwatch(
-                        rgn, panRow:GetFrameLevel() + 3,
-                        function() return BD().pandemicR or 1, BD().pandemicG or 1, BD().pandemicB or 0 end,
-                        function(r, g, b)
-                            BD().pandemicR = r; BD().pandemicG = g; BD().pandemicB = b
-                            Refresh(); EllesmereUI:RefreshPage()
+                    local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
+                        leftRgn, panGlowRow:GetFrameLevel() + 3,
+                        function()
+                            local c = BD().pandemicGlowColor
+                            if c then return c.r or 1, c.g or 1, c.b or 0 end
+                            return BD().pandemicR or 1, BD().pandemicG or 1, BD().pandemicB or 0
                         end,
-                        false, 20)
-                    PP.Point(panSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
-                    -- Blocking overlay when Pandemic Glow is off
-                    local panBlock = CreateFrame("Frame", nil, panSwatch)
-                    panBlock:SetAllPoints()
-                    panBlock:SetFrameLevel(panSwatch:GetFrameLevel() + 10)
-                    panBlock:EnableMouse(true)
-                    panBlock:SetScript("OnEnter", function()
-                        EllesmereUI.ShowWidgetTooltip(panSwatch, EllesmereUI.DisabledTooltip("Pandemic Glow"))
-                    end)
-                    panBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                        function(r, g, b)
+                            BD().pandemicGlowColor = { r = r, g = g, b = b }
+                            ns.BuildAllCDMBars(); Refresh()
+                            if panGlowRow._refreshPreview then panGlowRow._refreshPreview() end
+                        end, nil, 20)
+                    PP.Point(swatch, "RIGHT", ctrl, "LEFT", -12, 0)
+                    leftRgn._lastInline = swatch
                     EllesmereUI.RegisterWidgetRefresh(function()
-                        if updatePanSwatch then updatePanSwatch() end
-                        local on = BD().pandemicGlow ~= false
-                        panSwatch:SetAlpha(on and 1 or 0.3)
-                        if on then panBlock:Hide() else panBlock:Show() end
+                        local off = pandemicOff()
+                        swatch:SetAlpha(off and 0.15 or 1); swatch:EnableMouse(not off)
+                        if updateSwatch then updateSwatch() end
                     end)
+                    swatch:SetAlpha(pandemicOff() and 0.15 or 1)
+                    swatch:EnableMouse(not pandemicOff())
                 end
+            end
+
+            BuildPandemicCogButton(panGlowRow, antsOff, BD, function() ns.BuildAllCDMBars() end)
+
+            -- Apply All
+            if EllesmereUI.BuildSyncIcon then
+                EllesmereUI.BuildSyncIcon({
+                    region = panGlowRow._leftRegion,
+                    tooltip = "Apply Pandemic Glow settings to all (Nameplates, CDM Bars, Tracking Bars)",
+                    isSynced = function()
+                        return IsPandemicSyncedEverywhere(BD(), barKey, nil)
+                    end,
+                    onClick = function()
+                        ApplyPandemicToAll(BD(), barKey, nil)
+                    end,
+                })
             end
         end
 
