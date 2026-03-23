@@ -5616,49 +5616,13 @@ local function ReloadFrames()
     end
 end
 
--- Manage the Blizzard default castbar based on whether the UnitFrames player
--- castbar is active.  oUF's DisableBlizzard() strips events from
--- PlayerCastingBarFrame and may leave it parented under a hidden frame.
--- This function is safe to call multiple times (re-entrant).
+-- Manage Blizzard's player cast bar ownership based on whether UnitFrames is
+-- rendering its own player cast bar. oUF already handles the event plumbing
+-- for its own castbar element; this helper only coordinates suppression with
+-- other EUI modules and releases control cleanly for external addons.
 local function ApplyBlizzCastbarState()
-    local blizzBar = PlayerCastingBarFrame
-    if not blizzBar then return end
-
-    if db.profile.player.showPlayerCastbar then
-        -- UnitFrames has its own castbar -- suppress the Blizzard one.
-        blizzBar:UnregisterAllEvents()
-        blizzBar:SetScript("OnUpdate", nil)
-        blizzBar:Hide()
-    else
-        -- No UnitFrames castbar -- restore the Blizzard bar.
-        -- Re-parent to UIParent in case oUF left it under a hidden frame.
-        if blizzBar:GetParent() ~= UIParent then
-            blizzBar:SetParent(UIParent)
-        end
-        -- Re-register the events oUF stripped.
-        -- Do NOT clear OnUpdate -- Blizzard's cast bar uses it to animate the fill.
-        blizzBar:UnregisterAllEvents()
-        blizzBar:RegisterEvent("PLAYER_ENTERING_WORLD")
-        blizzBar:RegisterUnitEvent("UNIT_SPELLCAST_START",             "player", "vehicle")
-        blizzBar:RegisterUnitEvent("UNIT_SPELLCAST_STOP",              "player", "vehicle")
-        blizzBar:RegisterUnitEvent("UNIT_SPELLCAST_FAILED",            "player", "vehicle")
-        blizzBar:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED",       "player", "vehicle")
-        blizzBar:RegisterUnitEvent("UNIT_SPELLCAST_DELAYED",           "player", "vehicle")
-        blizzBar:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START",     "player", "vehicle")
-        blizzBar:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP",      "player", "vehicle")
-        blizzBar:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_UPDATE",    "player", "vehicle")
-        blizzBar:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTIBLE",     "player")
-        blizzBar:RegisterUnitEvent("UNIT_SPELLCAST_NOT_INTERRUPTIBLE", "player")
-    end
-
-    -- Hook Show() once so Blizzard can't flash the bar when it's suppressed.
-    -- Only hooks when showPlayerCastbar is true; skipped in restore path so
-    -- Edit Mode and normal casting can show the bar freely.
-    if db.profile.player.showPlayerCastbar and not blizzBar._euiShowHooked then
-        blizzBar._euiShowHooked = true
-        hooksecurefunc(blizzBar, "Show", function(self)
-            if db.profile.player.showPlayerCastbar then self:Hide() end
-        end)
+    if EllesmereUI and EllesmereUI.SetPlayerCastBarSuppressed and db and db.profile and db.profile.player then
+        EllesmereUI.SetPlayerCastBarSuppressed("UnitFrames", db.profile.player.showPlayerCastbar)
     end
 end
 

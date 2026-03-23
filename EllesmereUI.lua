@@ -7084,3 +7084,110 @@ function EllesmereUI.SetElementVisibility(frame, visible)
         frame:EnableMouse(false)
     end
 end
+
+-------------------------------------------------------------------------------
+--  Shared Player Cast Bar Suppression
+--  Multiple EUI modules can temporarily suppress Blizzard's player cast bar
+--  while they render their own. We centralize that ownership here so modules
+--  cooperate with each other and leave third-party visibility control alone
+--  once no EUI module is actively using a replacement bar.
+-------------------------------------------------------------------------------
+function EllesmereUI.SetPlayerCastBarSuppressed(owner, suppressed)
+    if not owner or owner == "" then return end
+
+    local owners = EllesmereUI._playerCastBarSuppressors
+    if not owners then
+        owners = {}
+        EllesmereUI._playerCastBarSuppressors = owners
+    end
+
+    if suppressed then
+        owners[owner] = true
+    else
+        owners[owner] = nil
+    end
+
+    local blizzBar = PlayerCastingBarFrame
+    if not blizzBar then return end
+
+    local shouldSuppress = next(owners) ~= nil
+    local hiddenParent = EllesmereUI._playerCastBarHiddenParent
+
+    if shouldSuppress then
+        if not hiddenParent then
+            hiddenParent = CreateFrame("Frame")
+            hiddenParent:Hide()
+            EllesmereUI._playerCastBarHiddenParent = hiddenParent
+        end
+
+        if blizzBar:GetParent() ~= hiddenParent then
+            blizzBar._euiOrigParent = blizzBar:GetParent()
+        end
+        blizzBar._euiCastBarSuppressed = true
+
+        if blizzBar:GetParent() ~= hiddenParent then
+            blizzBar:SetParent(hiddenParent)
+        end
+
+        -- Edit Mode tries to re-anchor the cast bar during layout changes.
+        -- Keep re-applying our hidden parent while any EUI owner suppresses it.
+        if not blizzBar._euiSetParentHooked then
+            blizzBar._euiSetParentHooked = true
+            hooksecurefunc(blizzBar, "SetParent", function(self, newParent)
+                if self._euiCastBarSuppressed and newParent ~= EllesmereUI._playerCastBarHiddenParent then
+                    C_Timer.After(0, function()
+                        if self._euiCastBarSuppressed
+                           and not InCombatLockdown()
+                           and self:GetParent() ~= EllesmereUI._playerCastBarHiddenParent
+                        then
+                            self:SetParent(EllesmereUI._playerCastBarHiddenParent)
+                        end
+                    end)
+                end
+            end)
+        end
+
+        local selection = blizzBar.Selection
+        if selection then
+            if not selection._euiSuppressed then
+                selection._euiRestoreAlpha = selection:GetAlpha()
+                selection._euiRestoreMouse = selection:IsMouseEnabled()
+            end
+            selection._euiSuppressed = true
+            selection:SetAlpha(0)
+            selection:EnableMouse(false)
+
+            if not selection._euiShowHooked then
+                selection._euiShowHooked = true
+                hooksecurefunc(selection, "Show", function(self)
+                    if PlayerCastingBarFrame and PlayerCastingBarFrame._euiCastBarSuppressed then
+                        self:SetAlpha(0)
+                        self:EnableMouse(false)
+                    end
+                end)
+            end
+        end
+
+        return
+    end
+
+    blizzBar._euiCastBarSuppressed = false
+
+    if hiddenParent and blizzBar:GetParent() == hiddenParent and blizzBar._euiOrigParent then
+        blizzBar:SetParent(blizzBar._euiOrigParent)
+    end
+
+    local selection = blizzBar.Selection
+    if selection then
+        selection._euiSuppressed = false
+        selection:SetAlpha(selection._euiRestoreAlpha or 1)
+        selection:EnableMouse(selection._euiRestoreMouse or false)
+    end
+
+    -- Let Blizzard rebuild its normal event wiring and pick up any active cast
+    -- without forcing visibility back on. This keeps profile switches and
+    -- UnitFrames/oUF teardown compatible with Blizzard's own cast bar logic.
+    if blizzBar.SetUnit then
+        blizzBar:SetUnit("player")
+    end
+end

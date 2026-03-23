@@ -2764,78 +2764,11 @@ local SPARK_TEX = "Interface\\AddOns\\EllesmereUINameplates\\Media\\cast_spark.t
 BuildCastBar = function()
     local cb = ERB.db.profile.castBar
 
-    -- Hide/show Blizzard default cast bar
-    -- IMPORTANT: We reparent the bar to a hidden frame instead of calling
-    -- Hide() or replacing Show().  Directly hiding or unregistering events
-    -- taints the secure frame, which causes errors on empowered spell casts
-    -- (CastingBarFrame.lua "attempt to compare secret string value").
-    -- Reparenting removes it from the visible hierarchy cleanly.
-    -- This also keeps the frame in the layout system so other addons
-    -- that anchor to it aren't disrupted.
-    local blizzBar = PlayerCastingBarFrame
-    if blizzBar then
-        if cb.enabled then
-            -- Create a hidden parent frame once
-            if not ERB._hiddenParent then
-                ERB._hiddenParent = CreateFrame("Frame")
-                ERB._hiddenParent:Hide()
-            end
-            -- Always re-apply: Blizzard may re-parent the bar on spec change
-            -- or other UI resets, so we can't rely on a cached flag.
-            blizzBar._erbOrigParent = blizzBar._erbOrigParent or blizzBar:GetParent()
-            local curParent = blizzBar:GetParent()
-            if curParent ~= ERB._hiddenParent then
-                blizzBar:SetParent(ERB._hiddenParent)
-            end
-            blizzBar._erbHidden = true
-
-            -- Prevent Blizzard from reparenting the cast bar back during
-            -- Edit Mode enter/exit or layout changes.  Use a guard flag
-            -- so our own SetParent calls (restore path) still work.
-            if not blizzBar._erbSetParentHooked then
-                blizzBar._erbSetParentHooked = true
-                hooksecurefunc(blizzBar, "SetParent", function(self, newParent)
-                    if self._erbHidden and newParent ~= ERB._hiddenParent then
-                        C_Timer.After(0, function()
-                            if self._erbHidden and not InCombatLockdown() then
-                                self:SetParent(ERB._hiddenParent)
-                            end
-                        end)
-                    end
-                end)
-            end
-
-            -- Hide the Edit Mode selection overlay so the cast bar cannot
-            -- be selected or highlighted in Blizzard Edit Mode.
-            if blizzBar.Selection and not blizzBar._erbSelectionHooked then
-                blizzBar._erbSelectionHooked = true
-                blizzBar.Selection:SetAlpha(0)
-                blizzBar.Selection:EnableMouse(false)
-                hooksecurefunc(blizzBar.Selection, "Show", function(self)
-                    if blizzBar._erbHidden then
-                        self:SetAlpha(0)
-                        self:EnableMouse(false)
-                    end
-                end)
-            end
-        else
-            if blizzBar._erbHidden then
-                blizzBar._erbHidden = false
-                -- Restore to original parent
-                if blizzBar._erbOrigParent then
-                    blizzBar:SetParent(blizzBar._erbOrigParent)
-                end
-                -- Restore Edit Mode selection overlay
-                if blizzBar.Selection then
-                    blizzBar.Selection:SetAlpha(1)
-                    blizzBar.Selection:EnableMouse(true)
-                end
-                -- Nudge SetUnit so it picks up any cast already in progress
-                if blizzBar.SetUnit then
-                    blizzBar:SetUnit("player")
-                end
-            end
-        end
+    -- ResourceBars only claims Blizzard's player cast bar while its own
+    -- replacement bar is active. The shared helper arbitrates ownership
+    -- across EUI modules and releases control cleanly for other addons.
+    if EllesmereUI and EllesmereUI.SetPlayerCastBarSuppressed then
+        EllesmereUI.SetPlayerCastBarSuppressed("ResourceBars", cb.enabled)
     end
 
     if not cb.enabled then
