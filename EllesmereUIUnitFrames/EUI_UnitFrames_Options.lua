@@ -6230,6 +6230,7 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         -- Cogwheel on Debuffs Location
+
         do
             local rightRgn = sharedAddRow2._rightRegion
             local _, debuffCogShowRaw = EllesmereUI.BuildCogPopup({
@@ -6250,7 +6251,19 @@ initFrame:SetScript("OnEvent", function(self)
             MakeCogBtn(rightRgn, debuffCogShow)
         end
 
-        _, h = W:Spacer(parent, y, 20); y = y - h
+        local sharedTooltipRow
+        sharedTooltipRow, h = W:DualRow(parent, y,
+            { type="toggle", text="Show Tooltip on Unitframe",
+              getValue=function() return SVal("showUnitTooltip", true) end,
+              setValue=function(v)
+                  local keys = GROUP_UNIT_ORDER or {"player", "target", "focus"}
+                  for _, key in ipairs(keys) do
+                      UNIT_DB_MAP[key]().showUnitTooltip = v
+                  end
+                  ReloadAndUpdate(); UpdatePreview()
+              end },
+            { type="label", text="" });  y = y - h
+
 
         -------------------------------------------------------------------
         --  Return click mapping targets + total height
@@ -6274,6 +6287,7 @@ initFrame:SetScript("OnEvent", function(self)
             castIcon     = { section = sharedCastHeader,     target = sharedCastRow1 },
             castName     = { section = sharedCastHeader,     target = sharedCastRow1 },
         }
+
 
         return y
     end  -- BuildSharedSettings
