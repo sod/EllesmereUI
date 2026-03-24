@@ -20,6 +20,11 @@ local GetCDMFont             = ns.GetCDMFont
 local hookFrameData = setmetatable({}, { __mode = "k" })
 ns._hookFrameData = hookFrameData
 
+-- External frame cache: avoid writing custom keys to Blizzard's secure frame
+-- tables (which taints them and causes "secret value" errors).
+local _ecmeFC = ns._ecmeFC
+local FC = ns.FC
+
 -- Spell routing: spellID -> barKey. Rebuilt when bar config changes.
 local _spellRouteMap = {}
 local _spellRouteGeneration = 0
@@ -323,8 +328,9 @@ ns.ResolveFrameSpellID = ResolveFrameSpellID
 --  Strips Blizzard's visual chrome from a CDM pool frame (one-time per frame).
 -------------------------------------------------------------------------------
 local function HideBlizzardDecorations(frame)
-    if frame._ecmeBlizzHidden then return end
-    frame._ecmeBlizzHidden = true
+    local fc = FC(frame)
+    if fc.blizzHidden then return end
+    fc.blizzHidden = true
 
     -- Named children: hide + hook to stay hidden
     local hideAndHook = function(child)
@@ -442,8 +448,9 @@ local function DecorateFrame(frame, barData)
 
     -- Suppress Blizzard's built-in tooltip when showTooltip is off.
     -- HookScript fires after Blizzard's OnEnter which shows GameTooltip.
-    if not frame._ecmeTooltipHooked then
-        frame._ecmeTooltipHooked = true
+    local fc = FC(frame)
+    if not fc.tooltipHooked then
+        fc.tooltipHooked = true
         frame:HookScript("OnEnter", function()
             local bd = frame._barKey and barDataByKey[frame._barKey]
             if bd and not bd.showTooltip then
@@ -453,8 +460,8 @@ local function DecorateFrame(frame, barData)
     end
 
     -- Range overlay hook: block Blizzard's red tint when option is off
-    if iconWidget and not frame._ecmeRangeHooked then
-        frame._ecmeRangeHooked = true
+    if iconWidget and not fc.rangeHooked then
+        fc.rangeHooked = true
         local inVC = false
         hooksecurefunc(iconWidget, "SetVertexColor", function(self, r, g, b, a)
             if inVC then return end
@@ -528,14 +535,15 @@ local function CategorizeFrame(frame, viewerBarKey)
     end
     if not cdID or not C_CooldownViewer then return nil, nil, nil end
 
-    local displaySID = frame._ecmeResolvedSid
-    local baseSID = frame._ecmeBaseSpellID
+    local fc = _ecmeFC[frame]
+    local displaySID = fc and fc.resolvedSid
+    local baseSID = fc and fc.baseSpellID
     -- Invalidate cache if cooldownID changed (pool recycling)
-    if displaySID and frame._ecmeCachedCdID ~= cdID then
+    if displaySID and fc.cachedCdID ~= cdID then
         displaySID = nil
         baseSID = nil
-        frame._ecmeResolvedSid = nil
-        frame._ecmeBaseSpellID = nil
+        fc.resolvedSid = nil
+        fc.baseSpellID = nil
     end
     if not displaySID then
         local info = C_CooldownViewer.GetCooldownViewerCooldownInfo(cdID)
@@ -544,9 +552,10 @@ local function CategorizeFrame(frame, viewerBarKey)
         if not displaySID or displaySID <= 0 then return nil, nil, nil end
         baseSID = info.spellID
         if not baseSID or baseSID <= 0 then baseSID = displaySID end
-        frame._ecmeResolvedSid = displaySID
-        frame._ecmeBaseSpellID = baseSID
-        frame._ecmeCachedCdID = cdID
+        if not fc then fc = {}; _ecmeFC[frame] = fc end
+        fc.resolvedSid = displaySID
+        fc.baseSpellID = baseSID
+        fc.cachedCdID = cdID
     end
 
     -- Check if any bar claims this spell (cross-viewer routing).
@@ -669,6 +678,8 @@ local function CollectAndReanchor()
         if barData and barData.enabled then
             local container = cdmBarFrames[barKey]
             if container then
+                -- Bar hidden by visibility mode: hide icons and skip processing
+                local barHidden = container:GetAlpha() == 0
                 local sd = ns.GetBarSpellData(barKey)
 
                 -- Build spell order for sorting (reuse scratch)
@@ -1041,7 +1052,10 @@ local function CollectAndReanchor()
                             icons[count] = frame
 
                             -- hideInactive: hide inactive real frames (not placeholders)
-                            if hideInactive and not euiOpen and entryInactive and not isPlaceholder then
+                            -- barHidden: bar is invisible via visibility mode
+                            if barHidden then
+                                frame:Hide()
+                            elseif hideInactive and not euiOpen and entryInactive and not isPlaceholder then
                                 frame:Hide()
                             else
                                 frame:Show()
@@ -1072,10 +1086,11 @@ local function CollectAndReanchor()
                                     end
                                 end
                                 local glowStyle = tonumber(anim)
+                                local ffc = FC(frame)
                                 if anim == "hideActive" then
                                     if isInActiveState then frame:SetAlpha(0) end
                                 elseif glowStyle and glowStyle > 0 and isInActiveState then
-                                    if not frame._glowOverlay._glowActive or frame._ecmeActiveGlowStyle ~= glowStyle then
+                                    if not frame._glowOverlay._glowActive or ffc.activeGlowStyle ~= glowStyle then
                                         local gr, gg, gb
                                         if barData.activeAnimClassColor then
                                             local _, cf = UnitClass("player")
@@ -1086,17 +1101,17 @@ local function CollectAndReanchor()
                                         gg = gg or barData.activeAnimG or 0.85
                                         gb = gb or barData.activeAnimB or 0.0
                                         ns.StartNativeGlow(frame._glowOverlay, glowStyle, gr, gg, gb)
-                                        frame._ecmeActiveGlowStyle = glowStyle
+                                        ffc.activeGlowStyle = glowStyle
                                     end
                                 elseif anim == "none" and isInActiveState then
                                     if frame._glowOverlay._glowActive then
                                         ns.StopNativeGlow(frame._glowOverlay)
-                                        frame._ecmeActiveGlowStyle = nil
+                                        ffc.activeGlowStyle = nil
                                     end
                                 else
-                                    if frame._glowOverlay._glowActive and frame._ecmeActiveGlowStyle then
+                                    if frame._glowOverlay._glowActive and ffc.activeGlowStyle then
                                         ns.StopNativeGlow(frame._glowOverlay)
-                                        frame._ecmeActiveGlowStyle = nil
+                                        ffc.activeGlowStyle = nil
                                     end
                                 end
                             end
@@ -1137,7 +1152,11 @@ local function CollectAndReanchor()
                         frame._spellID = entry.baseSpellID or entry.spellID
                         if noRange and frame._tex then frame._tex:SetVertexColor(1, 1, 1, 1) end
                         icons[count] = frame
-                        frame:Show()
+                        if barHidden then
+                            frame:Hide()
+                        else
+                            frame:Show()
+                        end
                         frame:SetAlpha(entry._inactive and 0.5 or 1)
                         usedFrames[frame] = true
                     end
@@ -1264,8 +1283,11 @@ function ns.SetupViewerHooks()
         if mixin then
             if mixin.OnCooldownIDSet then hooksecurefunc(mixin, "OnCooldownIDSet", function(frame)
                 -- Clear cached spell IDs so CategorizeFrame re-resolves
-                frame._ecmeResolvedSid = nil
-                frame._ecmeBaseSpellID = nil
+                local ffc = _ecmeFC[frame]
+                if ffc then
+                    ffc.resolvedSid = nil
+                    ffc.baseSpellID = nil
+                end
                 QueueReanchor()
             end) end
             if mixin.OnActiveStateChanged then hooksecurefunc(mixin, "OnActiveStateChanged", QueueReanchor) end

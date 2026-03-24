@@ -114,6 +114,12 @@ local _cdmViewerNames = {
     "BuffBarCooldownViewer",
 }
 
+-- External frame cache: stores all addon data keyed by Blizzard frame references
+-- instead of writing custom keys onto Blizzard's secure frame tables (which taints them).
+-- Weak keys so entries are collected when frames are recycled.
+local _ecmeFC = setmetatable({}, { __mode = "k" })
+local function FC(f) local c = _ecmeFC[f]; if not c then c = {}; _ecmeFC[f] = c end; return c end
+
 -- Duration object caches (hooked from Blizzard SetCooldownFromDurationObject)
 local _ecmeChildHasDurObj = {}
 local _ecmeDurObjCache    = {}
@@ -1597,12 +1603,13 @@ HideBlizzardCDM = function()
     for _, frameName in ipairs(allFrameNames) do
         local frame = _G[frameName]
         if frame then
-            if not frame._ecmeHidden then
-                frame._ecmeOrigPoints = {}
+            local fc = FC(frame)
+            if not fc.hidden then
+                fc.origPoints = {}
                 for i = 1, frame:GetNumPoints() do
-                    frame._ecmeOrigPoints[i] = { frame:GetPoint(i) }
+                    fc.origPoints[i] = { frame:GetPoint(i) }
                 end
-                frame._ecmeHidden = true
+                fc.hidden = true
             end
             -- Leave viewer positioned normally so Blizzard's internal
             -- layout system (including HideWhenInactive) keeps working.
@@ -1620,17 +1627,18 @@ RestoreBlizzardCDM = function()
     for _, fn in pairs(BLIZZ_CDM_FRAMES_SECONDARY) do allFrameNames[#allFrameNames + 1] = fn end
     for _, frameName in ipairs(allFrameNames) do
         local frame = _G[frameName]
-        if frame and frame._ecmeHidden then
-            frame._ecmeRestoring = true
-            frame:SetAlpha(frame._ecmeOrigAlpha or 1)
-            if frame._ecmeOrigPoints then
+        local fc = frame and _ecmeFC[frame]
+        if fc and fc.hidden then
+            fc.restoring = true
+            frame:SetAlpha(fc.origAlpha or 1)
+            if fc.origPoints then
                 frame:ClearAllPoints()
-                for _, pt in ipairs(frame._ecmeOrigPoints) do
+                for _, pt in ipairs(fc.origPoints) do
                     frame:SetPoint(pt[1], pt[2], pt[3], pt[4], pt[5])
                 end
             end
-            frame._ecmeHidden = false
-            frame._ecmeRestoring = nil
+            fc.hidden = false
+            fc.restoring = nil
         end
     end
 end
@@ -1640,17 +1648,18 @@ local function RestoreBlizzardBuffFrame()
     local frameName = BLIZZ_CDM_FRAMES.buffs
     if not frameName then return end
     local frame = _G[frameName]
-    if frame and frame._ecmeHidden then
-        frame._ecmeRestoring = true
-        frame:SetAlpha(frame._ecmeOrigAlpha or 1)
-        if frame._ecmeOrigPoints then
+    local fc = frame and _ecmeFC[frame]
+    if fc and fc.hidden then
+        fc.restoring = true
+        frame:SetAlpha(fc.origAlpha or 1)
+        if fc.origPoints then
             frame:ClearAllPoints()
-            for _, pt in ipairs(frame._ecmeOrigPoints) do
+            for _, pt in ipairs(fc.origPoints) do
                 frame:SetPoint(pt[1], pt[2], pt[3], pt[4], pt[5])
             end
         end
-        frame._ecmeHidden = false
-        frame._ecmeRestoring = nil
+        fc.hidden = false
+        fc.restoring = nil
     end
 end
 
@@ -2829,6 +2838,8 @@ ns._tickBarViewerCache      = _tickBarViewerCache
 ns._ecmeDurObjCache   = _ecmeDurObjCache
 ns._ecmeRawStartCache = _ecmeRawStartCache
 ns._ecmeRawDurCache   = _ecmeRawDurCache
+ns._ecmeFC = _ecmeFC
+ns.FC = FC
 
 -- Hook-based CDM Backend loaded from EllesmereUICdmHooks.lua
 local BuildCustomBarSpellSet -- forward declare (defined below)
@@ -2912,46 +2923,48 @@ local function UpdateAllCDMBars(dt)
                         if cdID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
                             -- Use cached info from previous tick if available.
                             -- GetCooldownViewerCooldownInfo allocates a new table each
-                            -- call; caching the extracted values on the child frame
+                            -- call; caching the extracted values in our external table
                             -- avoids ~30 table allocs/tick across all viewers.
-                            local resolvedSid = ch._ecmeResolvedSid
-                            local baseSpellID = ch._ecmeBaseSpellID
-                            local cachedOverride = ch._ecmeOverrideSid
+                            local cfc = _ecmeFC[ch]
+                            local resolvedSid = cfc and cfc.resolvedSid
+                            local baseSpellID = cfc and cfc.baseSpellID
+                            local cachedOverride = cfc and cfc.overrideSid
                             -- Invalidate cache when cooldownID changes (child recycled
                             -- by Blizzard CDM for a different spell, e.g. Empty Barrel
                             -- proc replacing another spell's child frame).
-                            -- Also invalidate when auraInstanceID changes (e.g. SLT→HST
+                            -- Also invalidate when auraInstanceID changes (e.g. SLT->HST
                             -- in same totem slot share cdID but have different auras).
-                            if resolvedSid and (ch._ecmeCachedCdID ~= cdID
-                                or (ch._ecmeCachedAuraInstID ~= nil and ch._ecmeCachedAuraInstID ~= ch.auraInstanceID)) then
+                            if resolvedSid and (cfc.cachedCdID ~= cdID
+                                or (cfc.cachedAuraInstID ~= nil and cfc.cachedAuraInstID ~= ch.auraInstanceID)) then
                                 resolvedSid = nil
                                 baseSpellID = nil
                                 cachedOverride = nil
-                                ch._ecmeResolvedSid = nil
-                                ch._ecmeBaseSpellID = nil
-                                ch._ecmeOverrideSid = nil
-                                ch._ecmeLinkedSpellIDs = nil
+                                cfc.resolvedSid = nil
+                                cfc.baseSpellID = nil
+                                cfc.overrideSid = nil
+                                cfc.linkedSpellIDs = nil
                             end
                             if not resolvedSid then
                                 local info = C_CooldownViewer.GetCooldownViewerCooldownInfo(cdID)
                                 if info then
+                                    if not cfc then cfc = {}; _ecmeFC[ch] = cfc end
                                     baseSpellID = info.spellID
                                     cachedOverride = info.overrideSpellID
                                     resolvedSid = ResolveInfoSpellID(info)
-                                    ch._ecmeBaseSpellID = baseSpellID
-                                    ch._ecmeOverrideSid = cachedOverride
-                                    ch._ecmeResolvedSid = resolvedSid
-                                    ch._ecmeCachedCdID = cdID
-                                    ch._ecmeCachedAuraInstID = ch.auraInstanceID
+                                    cfc.baseSpellID = baseSpellID
+                                    cfc.overrideSid = cachedOverride
+                                    cfc.resolvedSid = resolvedSid
+                                    cfc.cachedCdID = cdID
+                                    cfc.cachedAuraInstID = ch.auraInstanceID
                                     -- Cache linkedSpellIDs for spells like Eclipse that
                                     -- have multiple variant auras under a single CDM child.
-                                    -- Static property — only needs to be set once.
+                                    -- Static property -- only needs to be set once.
                                     -- Only cache when values are clean (non-secret) to
                                     -- avoid taint from combat API calls after /reload.
                                     if info.linkedSpellIDs and #info.linkedSpellIDs > 0 then
                                         local firstID = info.linkedSpellIDs[1]
                                         if not (issecretvalue and issecretvalue(firstID)) then
-                                            ch._ecmeLinkedSpellIDs = info.linkedSpellIDs
+                                            cfc.linkedSpellIDs = info.linkedSpellIDs
                                         end
                                     end
                                 end
@@ -2965,11 +2978,11 @@ local function UpdateAllCDMBars(dt)
                                        and liveOverride ~= 0 and liveOverride ~= cachedOverride then
                                         cachedOverride = liveOverride
                                         resolvedSid = liveOverride
-                                        ch._ecmeOverrideSid = cachedOverride
-                                        ch._ecmeResolvedSid = resolvedSid
+                                        cfc.overrideSid = cachedOverride
+                                        cfc.resolvedSid = resolvedSid
                                     end
                                 end
-                                ch._ecmeCachedAuraInstID = ch.auraInstanceID
+                                cfc.cachedAuraInstID = ch.auraInstanceID
                             end
                             if resolvedSid and resolvedSid > 0 then
                                 _tickBlizzAllChildCache[resolvedSid] = ch
@@ -2998,7 +3011,7 @@ local function UpdateAllCDMBars(dt)
                                     -- Linked-spell cache: for spells like Eclipse that
                                     -- have multiple variant auras under a single CDM
                                     -- child. Store at base and every linkedSpellID.
-                                    local linked = ch._ecmeLinkedSpellIDs
+                                    local linked = cfc and cfc.linkedSpellIDs
                                     if linked then
                                         local base = baseSpellID
                                         if base and base > 0 and base ~= resolvedSid then
@@ -3058,13 +3071,13 @@ local function UpdateAllCDMBars(dt)
                                     -- Also mark linked spell IDs as active so
                                     -- hideBuffsWhenInactive finds them regardless
                                     -- of which variant the tracked spell resolved to.
-                                    local linked = ch._ecmeLinkedSpellIDs
-                                    if linked then
+                                    local linked2 = cfc and cfc.linkedSpellIDs
+                                    if linked2 then
                                         if baseSpellID and baseSpellID > 0 then
                                             _tickBlizzActiveCache[baseSpellID] = true
                                         end
-                                        for li = 1, #linked do
-                                            local lsid = linked[li]
+                                        for li = 1, #linked2 do
+                                            local lsid = linked2[li]
                                             if lsid and lsid > 0 then
                                                 _tickBlizzActiveCache[lsid] = true
                                             end
@@ -3076,8 +3089,9 @@ local function UpdateAllCDMBars(dt)
                             -- when Blizzard sets them. Avoids secret-value arithmetic.
                             -- Store captured values in our own tables, not on the child frame,
                             -- to avoid taint from writing to Blizzard-owned frame fields.
-                            if ch.Cooldown and not ch._ecmeHooked then
-                                ch._ecmeHooked = true
+                            local chfc = cfc or FC(ch)
+                            if ch.Cooldown and not chfc.hooked then
+                                chfc.hooked = true
                                 if ch.Cooldown.SetCooldownFromDurationObject then
                                     hooksecurefunc(ch.Cooldown, "SetCooldownFromDurationObject", function(_, durObj)
                                         _ecmeDurObjCache[ch] = durObj
@@ -3314,6 +3328,23 @@ local function _CDMApplyVisibility()
             end
 
             end -- unlockActive else
+
+            -- Icons are parented to UIParent (not the container) so they
+            -- don't inherit the container's alpha. Explicitly hide/show them.
+            local barHidden = frame:GetAlpha() == 0
+            local icons = cdmBarIcons[barData.key]
+            if icons then
+                for i = 1, #icons do
+                    local icon = icons[i]
+                    if icon then
+                        if barHidden then
+                            icon:Hide()
+                        else
+                            icon:Show()
+                        end
+                    end
+                end
+            end
         end
     end
 end
@@ -4747,12 +4778,15 @@ local function ScheduleTalentRebuild()
                 for ci = 1, #children do
                     local ch = children[ci]
                     if ch then
-                        ch._ecmeResolvedSid = nil
-                        ch._ecmeBaseSpellID = nil
-                        ch._ecmeOverrideSid = nil
-                        ch._ecmeCachedCdID = nil
-                        ch._ecmeIsChargeSpell = nil
-                        ch._ecmeMaxCharges = nil
+                        local chfc = _ecmeFC[ch]
+                        if chfc then
+                            chfc.resolvedSid = nil
+                            chfc.baseSpellID = nil
+                            chfc.overrideSid = nil
+                            chfc.cachedCdID = nil
+                            chfc.isChargeSpell = nil
+                            chfc.maxCharges = nil
+                        end
                     end
                 end
             end

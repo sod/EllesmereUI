@@ -727,8 +727,13 @@ do
     --  coordinates to the nearest pixel, which causes blurry edges on
     --  sub-pixel-sized elements.
     ---------------------------------------------------------------------------
+    -- External weak-keyed set for pixel-snap tracking.
+    -- Avoids writing custom keys onto Blizzard's secure widget tables
+    -- (which taints them and causes "secret value" errors).
+    local _pixelSnapDisabled = setmetatable({}, { __mode = "k" })
+
     function PP.DisablePixelSnap(obj)
-        if not obj or obj.PixelSnapDisabled then return end
+        if not obj or _pixelSnapDisabled[obj] then return end
         if obj.IsForbidden and obj:IsForbidden() then return end
 
         -- Textures and FontStrings expose SetSnapToPixelGrid directly
@@ -737,7 +742,7 @@ do
             -- StatusBars need their inner texture unsnapped instead
             target = obj:GetStatusBarTexture()
             if type(target) ~= "table" or not target.SetSnapToPixelGrid then
-                obj.PixelSnapDisabled = true
+                _pixelSnapDisabled[obj] = true
                 return
             end
         end
@@ -746,7 +751,7 @@ do
             target:SetSnapToPixelGrid(false)
             target:SetTexelSnappingBias(0)
         end
-        obj.PixelSnapDisabled = true
+        _pixelSnapDisabled[obj] = true
     end
 
     ---------------------------------------------------------------------------
@@ -760,8 +765,8 @@ do
     --  Blizzard's code on spell swaps, page changes, combat transitions, etc.
     ---------------------------------------------------------------------------
     local function WatchPixelSnap(frame, snap)
-        if (frame and not frame:IsForbidden()) and frame.PixelSnapDisabled and snap then
-            frame.PixelSnapDisabled = nil
+        if (frame and not frame:IsForbidden()) and _pixelSnapDisabled[frame] and snap then
+            _pixelSnapDisabled[frame] = nil
         end
     end
 
@@ -6007,7 +6012,7 @@ end
 -------------------------------------------------------------------------------
 --  Slash commands
 -------------------------------------------------------------------------------
-EllesmereUI.VERSION = "5.5"
+EllesmereUI.VERSION = "5.5.1"
 
 -- Register this addon's version into a shared global table (taint-free at load time)
 if not _G._EUI_AddonVersions then _G._EUI_AddonVersions = {} end
