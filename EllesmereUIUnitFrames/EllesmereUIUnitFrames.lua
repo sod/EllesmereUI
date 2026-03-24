@@ -1541,7 +1541,9 @@ local function UpdateBordersForScale(frame, unit)
 
     local showPortrait = (db.profile.portraitStyle or "attached") ~= "none" and settings.showPortrait ~= false
     local isAttached = (db.profile.portraitStyle or "attached") == "attached"
-    local pSide = settings.portraitSide or "right"
+    -- Use the actual side the frame was built with (stored on the frame) so that
+    -- frames like the pet which hard-code "left" don't get treated as "right".
+    local pSide = frame._portraitSide or settings.portraitSide or "right"
     local effectiveSide = pSide
     if isAttached and pSide == "top" then effectiveSide = "right" end
 
@@ -2348,7 +2350,7 @@ local function CreateCastBar(frame, unit, settings)
     local iconSize = cbH
     local iconFrame = CreateFrame("Frame", nil, castbarBg)
     iconFrame:SetSize(iconSize, iconSize)
-    PP.Point(iconFrame, "TOPRIGHT", castbarBg, "TOPLEFT", 0, 0)
+    PP.Point(iconFrame, "TOPRIGHT", castbarBg, "TOPLEFT", -2, 0)
     local iconBg = iconFrame:CreateTexture(nil, "BACKGROUND")
     iconBg:SetAllPoints()
     iconBg:SetColorTexture(0, 0, 0, 1)
@@ -3302,14 +3304,15 @@ local function StylePetFrame(frame, unit)
     frame._portraitSide = "left"
     if frame.Portrait and not showPortrait then        frame.Portrait.backdrop:Hide()
     end
-    -- Re-anchor health bar to portrait's actual snapped width (eliminates sub-pixel gap)
+    -- Re-anchor health bar using healthHeight as the portrait width to avoid
+    -- sub-pixel GetWidth() mismatches at frame creation time
     if frame.Portrait and frame.Portrait.backdrop and showPortrait then
-        local snappedPortW = frame.Portrait.backdrop:GetWidth()
+        local portW = math.max(settings.healthHeight, 1)
         health:ClearAllPoints()
-        PP.Point(health, "TOPLEFT", frame, "TOPLEFT", snappedPortW, 0)
+        PP.Point(health, "TOPLEFT", frame, "TOPLEFT", portW, 0)
         PP.Point(health, "RIGHT", frame, "RIGHT", 0, 0)
         PP.Height(health, settings.healthHeight)
-        health._xOffset = snappedPortW
+        health._xOffset = portW
         health._rightInset = 0
         health._topOffset = 0
     end
@@ -5252,11 +5255,9 @@ local function ReloadFrames()
                     end
                     if frame.Health then
                         frame.Health:ClearAllPoints()
-                        -- Use portrait's actual snapped width for flush alignment
+                        -- Use healthHeight directly as portrait width to avoid GetWidth() timing issues
                         local petPortOff = 0
-                        if showPetPortrait and frame.Portrait and frame.Portrait.backdrop then
-                            petPortOff = frame.Portrait.backdrop:GetWidth()
-                        elseif showPetPortrait then
+                        if showPetPortrait then
                             petPortOff = settings.healthHeight
                         end
                         PP.Point(frame.Health, "TOPLEFT", frame, "TOPLEFT", petPortOff, 0)
