@@ -44,14 +44,24 @@ local GetBindingKey = GetBindingKey
 --  Bar configuration
 -------------------------------------------------------------------------------
 local BAR_CONFIG = {
-    { key = "MainBar",   label = "Action Bar 1 (Main)", barID = 1,  count = 12, blizzBtnPrefix = "ActionButton",              blizzFrame = "MainMenuBar" },
-    { key = "Bar2",      label = "Action Bar 2",        barID = 2,  count = 12, blizzBtnPrefix = "MultiBarBottomLeftButton",   blizzFrame = "MultiBarBottomLeft" },
-    { key = "Bar3",      label = "Action Bar 3",        barID = 3,  count = 12, blizzBtnPrefix = "MultiBarBottomRightButton",  blizzFrame = "MultiBarBottomRight" },
-    { key = "Bar4",      label = "Action Bar 4",        barID = 4,  count = 12, blizzBtnPrefix = "MultiBarRightButton",        blizzFrame = "MultiBarRight" },
-    { key = "Bar5",      label = "Action Bar 5",        barID = 5,  count = 12, blizzBtnPrefix = "MultiBarLeftButton",         blizzFrame = "MultiBarLeft" },
-    { key = "Bar6",      label = "Action Bar 6",        barID = 6,  count = 12, blizzBtnPrefix = "MultiBar5Button",          blizzFrame = "MultiBar5" },
-    { key = "Bar7",      label = "Action Bar 7",        barID = 7,  count = 12, blizzBtnPrefix = "MultiBar6Button",          blizzFrame = "MultiBar6" },
-    { key = "Bar8",      label = "Action Bar 8",        barID = 8,  count = 12, blizzBtnPrefix = "MultiBar7Button",          blizzFrame = "MultiBar7" },
+    -- nativeMainBar: MainBar buttons keep their native IDs (1-12) and derive
+    -- action via CalculateAction path 1. The bar frame's _onstate-page handler
+    -- sets actionpage from the restricted env for form/vehicle/override paging.
+    -- Keyboard input flows through Blizzard's native
+    -- ActionButtonDown/Up → GetActionButtonForID → _G["ActionButton"..id].
+    { key = "MainBar",   label = "Action Bar 1 (Main)", barID = 1,  count = 12, blizzBtnPrefix = "ActionButton",              blizzFrame = "MainMenuBar", nativeMainBar = true },
+    -- nativeActionPage: the Blizzard actionpage for this bar's slot range.
+    -- Buttons keep their native IDs and derive the action via
+    --   CalculateAction path 1: action = ID + (page - 1) * 12.
+    -- Keyboard input flows through Blizzard's native MultiActionButtonDown/Up
+    -- so UseAction receives isKeyPress=true (required for press-and-hold casting).
+    { key = "Bar2",      label = "Action Bar 2",        barID = 2,  count = 12, blizzBtnPrefix = "MultiBarBottomLeftButton",   blizzFrame = "MultiBarBottomLeft",  nativeActionPage = 6 },
+    { key = "Bar3",      label = "Action Bar 3",        barID = 3,  count = 12, blizzBtnPrefix = "MultiBarBottomRightButton",  blizzFrame = "MultiBarBottomRight", nativeActionPage = 5 },
+    { key = "Bar4",      label = "Action Bar 4",        barID = 4,  count = 12, blizzBtnPrefix = "MultiBarRightButton",        blizzFrame = "MultiBarRight",       nativeActionPage = 3 },
+    { key = "Bar5",      label = "Action Bar 5",        barID = 5,  count = 12, blizzBtnPrefix = "MultiBarLeftButton",         blizzFrame = "MultiBarLeft",        nativeActionPage = 4 },
+    { key = "Bar6",      label = "Action Bar 6",        barID = 6,  count = 12, blizzBtnPrefix = "MultiBar5Button",          blizzFrame = "MultiBar5",           nativeActionPage = 13 },
+    { key = "Bar7",      label = "Action Bar 7",        barID = 7,  count = 12, blizzBtnPrefix = "MultiBar6Button",          blizzFrame = "MultiBar6",           nativeActionPage = 14 },
+    { key = "Bar8",      label = "Action Bar 8",        barID = 8,  count = 12, blizzBtnPrefix = "MultiBar7Button",          blizzFrame = "MultiBar7",           nativeActionPage = 15 },
     { key = "StanceBar", label = "Stance Bar",          barID = 0,  count = 10, blizzBtnPrefix = "StanceButton",               blizzFrame = "StanceBar", isStance = true },
     { key = "PetBar",    label = "Pet Bar",             barID = 0,  count = 10, blizzBtnPrefix = "PetActionButton",            blizzFrame = "PetActionBar", isPetBar = true },
 }
@@ -686,6 +696,17 @@ do
             end
         end
     end
+
+    -- Hide ActionBarParent (the top-level container for stock action bars).
+    -- All individual bar frames are already reparented above, so this is
+    -- purely cosmetic (hides any leftover chrome). OverrideActionBar is
+    -- parented to UIParent, not ActionBarParent, so it is unaffected.
+    -- Done here at file-load time instead of via RegisterAttributeDriver
+    -- to avoid tainting Blizzard's protected frame state.
+    if ActionBarParent then
+        ActionBarParent:Hide()
+        ActionBarParent:SetParent(hiddenParent)
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -1031,9 +1052,26 @@ _secureHandler:SetAttribute("_onattributechanged", [=[
                     btnRef:SetID(petIndex)
                     btnRef:SetAttribute("action", nil)
                 else
-                    btnRef:SetID(0)
-                    if actionSlot and actionSlot ~= "" and actionSlot ~= "0" then
-                        btnRef:SetAttribute("action", tonumber(actionSlot))
+                    -- nativePage encodes the native dispatch mode:
+                    --   > 0: fixed-page bar (2-8), set actionpage on bar frame
+                    --   -1:  MainBar, actionpage set by _onstate-page on bar frame
+                    --   0:   legacy path, uses explicit action attribute
+                    local nativePage = tonumber(self:GetAttribute("layout-nativepage-" .. slot)) or 0
+                    if nativePage > 0 then
+                        -- Bars 2-8: keep native ID, set actionpage on bar frame
+                        -- from restricted env so CalculateAction path 1 works.
+                        barRef:SetAttribute("actionpage", nativePage)
+                        btnRef:SetAttribute("action", nil)
+                    elseif nativePage < 0 then
+                        -- MainBar: keep native ID, clear explicit action.
+                        -- actionpage is set by the _onstate-page handler on the
+                        -- bar frame, inherited via useparent-actionpage.
+                        btnRef:SetAttribute("action", nil)
+                    else
+                        btnRef:SetID(0)
+                        if actionSlot and actionSlot ~= "" and actionSlot ~= "0" then
+                            btnRef:SetAttribute("action", tonumber(actionSlot))
+                        end
                     end
                 end
                 if show == "1" then
@@ -1067,36 +1105,12 @@ _secureHandler:SetAttribute("_onattributechanged", [=[
         end
     end
 
-    -- Step 5: Set up MainBar paging attributes on buttons.
-    -- _childupdate-offset can only be set from the restricted environment on
-    -- protected frames, so we do it here rather than from normal Lua.
-    -- For MainBar buttons, actionSlot encodes the button index (1-12).
-    local mainOffset = self:GetAttribute("mainbar-offset") or 0
-    for slot = 1, btnCount do
-        local data = self:GetAttribute("layout-" .. slot)
-        if data then
-            local barKey, _, _, _, _, _, actionSlot = strsplit("|", data)
-            if barKey == "MainBar" then
-                local idx = tonumber(actionSlot) or 0
-                if idx > 0 then
-                    local btnRef = self:GetFrameRef("btn-" .. slot)
-                    if btnRef then
-                        btnRef:SetAttribute("index", idx)
-                        btnRef:SetAttribute("_childupdate-offset", [[
-                            local offset = message or 0
-                            local id = self:GetAttribute("index") + offset
-                            if self:GetAttribute("action") ~= id then
-                                self:SetAttribute("action", id)
-                            end
-                        ]])
-                        btnRef:SetAttribute("action", idx + mainOffset)
-                    end
-                end
-            end
-        end
-    end
+    -- Step 5: MainBar paging is driven by the _onstate-page handler on the
+    -- bar frame, which sets actionpage from the restricted env. Buttons
+    -- inherit it via useparent-actionpage. No _childupdate-offset needed.
 
-    -- Step 6: Keybinds are handled via override bindings in UpdateKeybinds().
+    -- Step 6: Bars 1-8 use native Blizzard keybind dispatch (no overrides).
+    -- Stance/pet bars use override bindings set by UpdateKeybinds().
 ]=])
 
 -- Register all Blizzard buttons and bar frames as refs on the secure handler.
@@ -1167,7 +1181,7 @@ local function SecureSetupHandler_RegisterBarFrame(key, frame)
 end
 
 -- Encode layout data for all buttons as attributes, then trigger the snippet.
--- layoutData: table of { slot = { barKey, x, y, w, h, show, actionSlot } }
+-- layoutData: table of { slot = { barKey, x, y, w, h, show, actionSlot, nativePage } }
 -- barFrameData: table of { key, w, h, point, relPoint, x, y }
 local function SecureSetupHandler_Execute(layoutData, barFrameData)
     -- Encode button layout
@@ -1175,6 +1189,9 @@ local function SecureSetupHandler_Execute(layoutData, barFrameData)
         local actionSlot = d.actionSlot or 0
         _secureHandler:SetAttribute("layout-" .. slot,
             d.barKey .. "|" .. d.x .. "|" .. d.y .. "|" .. d.w .. "|" .. d.h .. "|" .. (d.show and "1" or "0") .. "|" .. actionSlot)
+        -- Native-dispatch bars: pass nativeActionPage so the secure snippet
+        -- keeps the button's native ID and sets actionpage on the bar frame.
+        _secureHandler:SetAttribute("layout-nativepage-" .. slot, d.nativePage or 0)
     end
     -- Encode bar frame sizes/positions
     local barFrameCount = 0
@@ -1184,10 +1201,6 @@ local function SecureSetupHandler_Execute(layoutData, barFrameData)
             d.key .. "|" .. d.w .. "|" .. d.h .. "|" .. d.point .. "|" .. d.relPoint .. "|" .. d.x .. "|" .. d.y .. "|" .. (d.hidden and "1" or "0"))
     end
     _secureHandler:SetAttribute("barframe-count", barFrameCount)
-    -- Pass current MainBar page offset so the snippet can set initial action slots
-    local mainFrame = barFrames["MainBar"]
-    local mainOffset = mainFrame and (mainFrame:GetAttribute("actionOffset") or 0) or 0
-    _secureHandler:SetAttribute("mainbar-offset", mainOffset)
     -- Native Blizzard keybinds: no override bind data needed for combat reload.
     _secureHandler:SetAttribute("bind-count", 0)
     -- Trigger the snippet
@@ -1290,20 +1303,12 @@ local function HideBlizzardBars()
             StatusTrackingBarManager:Hide()
         end
     end
-    -- Hide ActionBarParent normally; show it during full vehicle UI so
-    -- Blizzard's vehicle bar can render.  Combat-safe via attribute driver.
-    if ActionBarParent then
-        RegisterAttributeDriver(ActionBarParent, "state-visibility",
-            "[vehicleui][overridebar] show; hide")
-    end
-    -- Let Blizzard's OverrideActionBar show itself for override bars and
-    -- skinned vehicles (quest mini-vehicles, encounter abilities, etc.).
-    -- Blizzard's ActionBarController handles populating it correctly.
-    -- Combat-safe via attribute driver -- no direct Hide() calls.
-    if OverrideActionBar then
-        RegisterAttributeDriver(OverrideActionBar, "state-visibility",
-            "[vehicleui][overridebar] show; hide")
-    end
+    -- ActionBarParent is hidden at file-load time (early disposal).
+    -- OverrideActionBar visibility is fully owned by Blizzard's
+    -- ValidateActionBarTransition() in ActionBarController.lua.
+    -- No RegisterAttributeDriver calls on Blizzard-owned frames — those
+    -- risk tainting protected state (actionpage, action attributes) that
+    -- OverrideActionBar buttons inherit.
     -- Debug: /eabdrag to check button state for drag issues
     SLASH_EABDRAG1 = "/eabdrag"
     SlashCmdList["EABDRAG"] = function(msg)
@@ -1415,7 +1420,7 @@ end
 
 -- Forward declaration -- defined fully in the keybind section below.
 -- Allows SetupBar to eagerly create bind buttons while out of combat.
-local GetOrCreateBindButton
+-- (bind-button forward declaration removed: all action bars use native dispatch)
 -------------------------------------------------------------------------------
 --  Re-register events on action buttons after HideBlizzardBars unregistered
 --  them. These are the events that Blizzard's button mixins need for
@@ -1492,6 +1497,13 @@ local function GetOrCreateButton(slot, parent, info, index, skipProtected)
         -- by global name and already calls DoModeChange on them. Setting the
         -- flag would cause EAB_UpdateQuickKeybindButtons to double-toggle
         -- their QKB highlight.
+        -- Break the .bar reference so ActionBarActionButtonMixin:UpdateAction
+        -- does not call self.bar:UpdateShownButtons() on the hidden Blizzard
+        -- bar frame. Blizzard sets this as lowercase .bar (ActionBar.lua:33).
+        -- This is a plain Lua field (not a protected attribute), so it must
+        -- be cleared unconditionally — including the combat-reload path where
+        -- Blizzard's OnLoad has already set btn.bar to the stock bar frame.
+        btn.bar = nil
         if not skipProtected then
             -- Clear statehidden set during HideBlizzardBars so the button
             -- becomes visible again under our control.
@@ -1500,8 +1512,16 @@ local function GetOrCreateButton(slot, parent, info, index, skipProtected)
             ReRegisterButtonEvents(btn, "action")
             -- Reparent the Blizzard button to our bar frame
             btn:SetParent(parent)
-            btn:SetID(0)  -- Reset ID to avoid Blizzard paging interference
-            btn.Bar = nil  -- Drop reference to Blizzard bar parent
+            if info.nativeActionPage or info.nativeMainBar then
+                -- Native-dispatch bars: keep the original button ID (1-12) so
+                -- CalculateAction uses path 1. Bars 2-8 use a fixed actionpage
+                -- on the parent frame; MainBar's actionpage is driven by the
+                -- _onstate-page handler. Keyboard input flows through Blizzard's native
+                -- ActionButtonDown/Up or MultiActionButtonDown/Up which passes
+                -- isKeyPress=true.
+            else
+                btn:SetID(0)  -- Reset ID to avoid Blizzard paging interference
+            end
             btn:Show()
         end
     else
@@ -1777,10 +1797,10 @@ ns.LayoutPagingFrame = LayoutPagingFrame
 
 -------------------------------------------------------------------------------
 --  Secure Bar Frame Creation
---  Each bar gets a SecureHandlerStateTemplate frame that manages paging.
---  Paging uses the _childupdate-offset pattern: the parent frame
---  computes an action offset and broadcasts it to children via ChildUpdate.
---  Each button has a _childupdate-offset handler that sets its own action.
+--  Each bar gets a SecureHandlerStateTemplate frame. Bars 2-8 set a fixed
+--  actionpage on the frame; MainBar sets actionpage via a _onstate-page
+--  handler. Buttons derive their action via CalculateAction path 1
+--  (ID + (page-1)*12) with native IDs.
 -------------------------------------------------------------------------------
 local NUM_ACTIONBAR_BUTTONS = NUM_ACTIONBAR_BUTTONS or 12
 
@@ -1798,59 +1818,41 @@ local function CreateBarFrame(info)
     frame._barInfo = info
 
     if key == "MainBar" then
-        -- Main bar uses paging via state driver
+        -- MainBar uses native keyboard dispatch: ActionButton1-12 keep their
+        -- IDs and derive action via CalculateAction path 1 (page-based).
+        --
+        -- Buttons inherit actionpage from this bar frame via useparent-actionpage.
+        -- The state driver evaluates class-specific paging conditions (forms,
+        -- vehicle, override, possess, bonus bars) and the _onstate-page handler
+        -- propagates the result to actionpage from the restricted env (untainted).
+        --
+        -- C_ActionBar.GetActionBarPage() is NOT sufficient as a fallback because
+        -- it only returns the "manual" page (Ctrl+PageUp/Down), not the dynamic
+        -- page set by ActionBarController_UpdateAll for vehicle/override/form
+        -- states. Blizzard normally handles this by setting actionpage directly
+        -- on MainActionBar, but our buttons are parented to EABBar_MainBar.
         local pagingConditions = GetClassPagingConditions()
 
-        frame:SetAttribute("barLength", NUM_ACTIONBAR_BUTTONS)
-        frame:SetAttribute("overrideBarLength", NUM_ACTIONBAR_BUTTONS)
-
-        -- Listen for override page and override bar state changes
-        -- from the OverrideController so we can remap to vehicle/possess slots.
-        frame:SetAttribute("_onstate-overridebar", [[ self:RunAttribute("UpdateOffset") ]])
-        frame:SetAttribute("_onstate-overridepage", [[ self:RunAttribute("UpdateOffset") ]])
-        frame:SetAttribute("_onstate-page", [[ self:RunAttribute("UpdateOffset") ]])
-
-        -- Unified offset calculation: checks override page first, then
-        -- falls back to normal paging. Skips the unusable slot 132 range.
-        frame:SetAttribute("UpdateOffset", [[
-            local offset = 0
-
-            local overridePage = self:GetAttribute("state-overridepage") or 0
-            if overridePage > 0 and self:GetAttribute("state-overridebar") then
-                offset = (overridePage - 1) * self:GetAttribute("overrideBarLength")
-            else
-                local page = self:GetAttribute("state-page") or 1
-
-                -- Possess/bonus bar fallback: resolve the real page index
-                if page == 11 then
-                    if HasVehicleActionBar() then
-                        page = GetVehicleBarIndex()
-                    elseif HasOverrideActionBar() then
-                        page = GetOverrideBarIndex()
-                    elseif HasTempShapeshiftActionBar() then
-                        page = GetTempShapeshiftBarIndex()
-                    elseif HasBonusActionBar() then
-                        page = GetBonusBarIndex()
-                    end
-                end
-
-                local barLen = self:GetAttribute("barLength")
-                offset = (page - 1) * barLen
-
-                -- Skip action bar 12 slots (133-144 are not usable)
-                if offset >= 132 then
-                    offset = offset + 12
-                end
-            end
-
-            self:SetAttribute("actionOffset", offset)
-            control:ChildUpdate("offset", offset)
-        ]])
-
-        -- Mark MainBar as the override bar target
+        -- Mark MainBar as the override bar target so the override controller
+        -- propagates vehicle/override/petbattle state changes.
         frame:SetAttribute("state-overridebar", true)
 
+        -- Propagate the page state to actionpage on this bar frame. Runs in the
+        -- restricted environment so the attribute is untainted. Buttons with
+        -- useparent-actionpage=true inherit it via SecureButton_GetModifiedAttribute.
+        frame:SetAttributeNoHandler("_onstate-page", [[
+            self:SetAttribute("actionpage", tonumber(newstate) or 1)
+        ]])
+
         RegisterStateDriver(frame, "page", pagingConditions)
+    end
+
+    -- Native-dispatch bars (Bars 2-8): set actionpage from the restricted
+    -- environment so it is untainted. Buttons with useparent-actionpage=true
+    -- (set by ActionBarActionButtonMixin:OnLoad) inherit this value, and
+    -- CalculateAction path 1 computes: action = ID + (page - 1) * 12.
+    if info.nativeActionPage then
+        frame:Execute(("self:SetAttribute('actionpage', %d)"):format(info.nativeActionPage))
     end
 
     barFrames[key] = frame
@@ -1941,85 +1943,23 @@ local function SetupBar(info, skipProtected)
             local slot = slotOffset + i
             local btn
 
-            if key == "MainBar" then
-                -- Create fresh buttons for MainBar. The original
-                -- ActionButton1-12 have C-side visibility management
-                -- that conflicts with our button controller, causing an
-                -- infinite OnEnter/OnLeave loop on buttons beyond the
-                -- Edit Mode icon cap.
-                local name = "EABButton" .. slot
-                btn = allButtons[slot] or _G[name]
-                if not btn then
-                    btn = CreateFrame("CheckButton", name, frame, "ActionBarButtonTemplate")
-                    btn:SetAttributeNoHandler("action", 0)
-                    btn:SetAttributeNoHandler("showgrid", 0)
-                    btn:SetAttributeNoHandler("useparent-checkfocuscast", true)
-                    btn:SetAttributeNoHandler("useparent-checkmouseovercast", true)
-                    btn:SetAttributeNoHandler("useparent-checkselfcast", true)
-                    if not btn.GetPopupDirection then
-                        btn.GetPopupDirection = function(self)
-                            return self:GetAttribute("flyoutDirection") or "UP"
-                        end
-                    end
-                    if btn.TextOverlayContainer then
-                        btn.TextOverlayContainer:EnableMouse(false)
-                        if btn.TextOverlayContainer.SetMouseClickEnabled then
-                            btn.TextOverlayContainer:SetMouseClickEnabled(false)
-                            btn.TextOverlayContainer:SetMouseMotionEnabled(false)
-                        end
-                    end
-                    allButtons[slot] = btn
-                end
-                btn._eabOwnQuickKeybind = true
-
-                RegisterButtonWithController(btn)
-
-                if not skipProtected then
-                    btn:SetParent(frame)
-                    btn:SetAttribute("index", i)
-                    btn:SetAttribute("_childupdate-offset", [[
-                        local offset = message or 0
-                        local id = self:GetAttribute("index") + offset
-                        if self:GetAttribute("action") ~= id then
-                            self:SetAttribute("action", id)
-                        end
-                    ]])
-                    local curOffset = frame:GetAttribute("actionOffset") or 0
-                    btn:SetAttribute("action", i + curOffset)
-                    -- Set binding attribute so QuickKeybind mode can resolve keybinds
-                    local bindPrefix = BINDING_MAP[key]
-                    if bindPrefix then
-                        local bindingStr = bindPrefix .. i
-                        btn:SetAttributeNoHandler("binding", bindingStr)
-                        if btn._bindBtn then
-                            btn._bindBtn:SetAttributeNoHandler("binding", bindingStr)
-                        end
-                    end
-                    -- Force the mixin to update so HasAction/icon state
-                    -- is correct before ApplyAlwaysShowButtons runs.
-                    if btn.UpdateAction then
-                        btn:UpdateAction()
-                    end
-                end
-            else
                 btn = GetOrCreateButton(slot, frame, info, i, skipProtected)
                 if btn then
                     if not skipProtected then
-                        if not info.isStance then
+                        -- Native-dispatch bars derive action from ID + actionpage.
+                        -- Bars 2-8 use a fixed page; MainBar's page is driven by
+                        -- _onstate-page. Skip the explicit action attribute which
+                        -- would select CalculateAction path 2 and bypass native dispatch.
+                        if not info.isStance and not info.nativeActionPage and not info.nativeMainBar then
                             btn:SetAttribute("action", slot)
                         end
                         -- Set binding attribute so QuickKeybind can resolve keybinds
                         local bindPrefix = BINDING_MAP[key]
                         if bindPrefix then
-                            local bindingStr = bindPrefix .. i
-                            btn:SetAttributeNoHandler("binding", bindingStr)
-                            if btn._bindBtn then
-                                btn._bindBtn:SetAttributeNoHandler("binding", bindingStr)
-                            end
+                            btn:SetAttributeNoHandler("binding", bindPrefix .. i)
                         end
                     end
                 end
-            end
 
             if btn then
                 -- commandName is a plain Lua field (not a protected attribute),
@@ -2031,7 +1971,15 @@ local function SetupBar(info, skipProtected)
                 end
                 -- RegisterForClicks and EnableMouseWheel are not protected
                 if btn.RegisterForClicks then
-                    btn:RegisterForClicks("AnyDown", "AnyUp")
+                    if info.nativeActionPage or info.nativeMainBar then
+                        -- Native-dispatch bars: use Blizzard's default registration.
+                        -- ActionBarActionButtonMixin:OnLoad sets AnyUp + LeftButtonDown
+                        -- + RightButtonDown. Action fires on mouse-up; press-and-hold
+                        -- repeat is keyboard-only per Blizzard's design.
+                        btn:RegisterForClicks("AnyUp", "LeftButtonDown", "RightButtonDown")
+                    else
+                        btn:RegisterForClicks("AnyDown", "AnyUp")
+                    end
                 end
                 if btn.EnableMouseWheel then
                     btn:EnableMouseWheel(true)
@@ -2059,9 +2007,14 @@ local function SetupBar(info, skipProtected)
     -- Wipe the Blizzard bar's actionButtons table so that
     -- UpdateShownButtons (called on every OnEnter) has nothing to
     -- iterate. Without this, Blizzard hides buttons beyond
-    -- numButtonsShowable on hover. Keybinds are handled entirely
-    -- through our own override bindings in UpdateKeybinds.
-    if not skipProtected and not info.isStance and not info.isPetBar then
+    -- numButtonsShowable on hover.
+    --
+    -- Native-dispatch bars keep the actionButtons table intact because
+    -- MultiActionButtonDown(barName, id) looks up _G[barName].actionButtons[id]
+    -- to find the button for keyboard dispatch. Instead, we break the
+    -- btn.bar reference (in GetOrCreateButton) so UpdateShownButtons is
+    -- never reached from the button side.
+    if not skipProtected and not info.isStance and not info.isPetBar and not info.nativeActionPage then
         local blizzBar = _G[info.blizzFrame]
         if blizzBar and blizzBar.actionButtons and type(blizzBar.actionButtons) == "table" then
             table.wipe(blizzBar.actionButtons)
@@ -3746,20 +3699,26 @@ local _range = {
     outOfRange = {},      -- [actionSlot] = true  (currently out of range)
     eventFrame = nil,     -- lazy-created event frame
     slotPending = false,  -- debounce for per-slot range re-enable
-    mainBarOffset = 0,    -- cached actionOffset for MainBar (updated on page change)
 }
 
 -- Resolve the action slot for a button without reading btn.action.
 -- btn.action is a protected attribute (secret value in Midnight) and
 -- reading it during combat causes taint. Instead we use a lookup table
--- populated at setup time plus a cached page offset for MainBar.
+-- populated at setup time. MainBar reads actionpage from the bar frame
+-- (set by _onstate-page) to compute the current page offset dynamically.
 local function GetButtonActionSlot(btn)
     local info = buttonToBar[btn]
     if not info then return nil end
     local offset = BAR_SLOT_OFFSETS[info.barKey]
     if not offset then return nil end
     if info.barKey == "MainBar" then
-        offset = _range.mainBarOffset
+        -- Read the current page from the bar frame's actionpage attribute,
+        -- which is set by the _onstate-page handler in the restricted env.
+        -- This correctly reflects vehicle/override/form pages, unlike
+        -- C_ActionBar.GetActionBarPage() which only tracks the manual page.
+        local frame = barFrames["MainBar"]
+        local page = frame and tonumber(frame:GetAttribute("actionpage")) or C_ActionBar.GetActionBarPage()
+        offset = (page - 1) * NUM_ACTIONBAR_BUTTONS
     end
     return offset + info.index
 end
@@ -3822,12 +3781,8 @@ function EAB:ApplyRangeColoring()
     -- Set up the event listener BEFORE enabling range checks so any
     -- immediate ACTION_RANGE_CHECK_UPDATE events are caught.
     if not _range.eventFrame then
-        -- Snapshot the current MainBar page offset so GetButtonActionSlot
-        -- returns correct slots before the first ACTIONBAR_PAGE_CHANGED fires.
-        local mainFrame = barFrames["MainBar"]
-        if mainFrame then
-            _range.mainBarOffset = mainFrame:GetAttribute("actionOffset") or 0
-        end
+        -- No offset snapshot needed: GetButtonActionSlot reads the bar
+        -- frame's actionpage attribute dynamically for MainBar.
         _range.eventFrame = CreateFrame("Frame")
         _range.eventFrame:RegisterEvent("ACTION_RANGE_CHECK_UPDATE")
         _range.eventFrame:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
@@ -3881,10 +3836,8 @@ function EAB:ApplyRangeColoring()
                     end)
                 end
             elseif event == "ACTIONBAR_PAGE_CHANGED" then
-                local mainFrame = barFrames["MainBar"]
-                if mainFrame then
-                    _range.mainBarOffset = mainFrame:GetAttribute("actionOffset") or 0
-                end
+                -- No offset update needed: GetButtonActionSlot reads the bar
+                -- frame's actionpage attribute dynamically for MainBar.
                 -- Page changed: clear all range state and re-enable for new slots
                 wipe(_range.outOfRange)
                 for _, info in ipairs(BAR_CONFIG) do
@@ -5417,108 +5370,18 @@ end
 
 -------------------------------------------------------------------------------
 --  Keybind System
---  Binds keys to our buttons. On MainBar, bindings are ACTIONBUTTON1-12.
---  On other bars, we use the standard MULTIACTIONBAR bindings.
+--  Action bars 1-8 use Blizzard's native keyboard dispatch:
+--    - MainBar: ActionButtonDown/Up → GetActionButtonForID → _G["ActionButton"..id]
+--    - Bars 2-8: MultiActionButtonDown/Up → _G[barName].actionButtons[id]
+--  Both paths call TryUseActionButton which passes isKeyPress=true to UseAction,
+--  enabling press-and-hold casting and empowered spell stage charging.
 --
---  Each button gets a hidden SecureActionButtonTemplate child ("bind button")
---  that receives keybind presses and mirrors the parent's action.
---
---  Cast-on-key-down (ActionButtonUseKeyDown CVar):
---    When ON:  keys are bound with "HOTKEY" click type. A WrapScript in the
---              secure env translates HOTKEY -> LeftButton on key-down.
---              typerelease="actionrelease" is set so hold-to-cast works.
---    When OFF: keys are bound with "LeftButton" click type. The bind button
---              fires normally on key-up. No HOTKEY translation occurs.
---              Zero overhead vs. not having the bind button at all.
+--  Stance and pet bars use override bindings directly to their buttons.
 -------------------------------------------------------------------------------
 local _bindState = { vehicleCleared = false, housingCleared = false }
 
--- Secure controller used to WrapScript bind buttons in the secure environment.
-local _bindController = CreateFrame("Frame", nil, nil, "SecureHandlerAttributeTemplate")
-
--- Returns true if the cast-on-key-down CVar is currently enabled.
-local function IsKeyDownEnabled()
-    return GetCVar("ActionButtonUseKeyDown") == "1"
-end
-
-GetOrCreateBindButton = function(btn)
-    if btn._bindBtn then return btn._bindBtn end
-    -- Bind buttons must be created out of combat. If called in combat
-    -- (should not happen after eager creation in SetupBar), bail out.
-    if InCombatLockdown() then return nil end
-
-    local bind = CreateFrame("Button", btn:GetName() .. "_EABBind", btn, "SecureActionButtonTemplate")
-    bind:SetAttributeNoHandler("type", "action")
-    bind:SetAttributeNoHandler("useparent-action", true)
-    bind:SetAttributeNoHandler("useparent-checkfocuscast", true)
-    bind:SetAttributeNoHandler("useparent-checkmouseovercast", true)
-    bind:SetAttributeNoHandler("useparent-checkselfcast", true)
-    bind:SetAttributeNoHandler("useparent-flyoutDirection", true)
-    bind:SetAttributeNoHandler("useparent-pressAndHoldAction", true)
-    bind:SetAttributeNoHandler("useparent-unit", true)
-    -- Mirror the parent's binding action so QuickKeybind can resolve it
-    local parentBinding = btn:GetAttribute("binding")
-    if parentBinding then
-        bind:SetAttributeNoHandler("binding", parentBinding)
-    end
-    bind:SetSize(1, 1)
-    bind:EnableMouseWheel(true)
-    bind:RegisterForClicks("AnyUp", "AnyDown")
-
-    -- Register with our custom flyout system (intercepts flyout clicks
-    -- in the secure env so they never reach Blizzard's taint-prone path).
-    -- Stance and pet bar buttons never have flyout actions, and the
-    -- flyout WrapScript calls GetActionInfo which requires an "action"
-    -- attribute that these buttons lack.  Skip registration for them.
-    if not btn._skipFlyout then
-        GetEABFlyout():RegisterButton(bind, btn)
-    end
-
-    -- Translate HOTKEY virtual click into LeftButton inside the secure env.
-    -- Only active when keys are bound with "HOTKEY" click type (key-down mode).
-    -- When key-down is off, keys are bound as "LeftButton" so this never fires.
-    -- For flyout actions, translate to LeftButton so the flyout WrapScript
-    -- (registered earlier in the chain) can intercept and open the flyout.
-    _bindController:WrapScript(bind, "OnClick", [[
-        if button == "HOTKEY" then
-            return "LeftButton"
-        end
-    ]])
-
-    -- Visual feedback: push/release the parent button on key down/up.
-    -- Safe for both key-down and key-up modes.
-    bind:SetScript("PreClick", function(self, _, down)
-        local owner = self:GetParent()
-        if down then
-            if owner:GetButtonState() == "NORMAL" then
-                owner:SetButtonState("PUSHED")
-            end
-        else
-            if owner:GetButtonState() == "PUSHED" then
-                owner:SetButtonState("NORMAL")
-            end
-        end
-    end)
-
-    btn._bindBtn = bind
-    return bind
-end
-
--- Applies the correct typerelease to a bind button based on whether
--- cast-on-key-down is currently enabled. Called out of combat only.
-local function ApplyBindButtonMode(bind, keyDownEnabled)
-    if keyDownEnabled then
-        -- Key-down mode: typerelease="actionrelease" enables hold-to-cast.
-        bind:SetAttributeNoHandler("typerelease", "actionrelease")
-    else
-        -- Key-up mode: no typerelease needed.
-        bind:SetAttributeNoHandler("typerelease", nil)
-    end
-end
-
 local function UpdateKeybinds()
     if InCombatLockdown() then return end
-    local keyDown = IsKeyDownEnabled()
     for _, info in ipairs(BAR_CONFIG) do
         local prefix = BINDING_MAP[info.key]
         local btns = barButtons[info.key]
@@ -5539,21 +5402,8 @@ local function UpdateKeybinds()
                         if k2 then
                             SetOverrideBindingClick(btn, false, k2, btn:GetName(), "LeftButton")
                         end
-                    else
-                        local bind = GetOrCreateBindButton(btn)
-                        if bind then
-                            ApplyBindButtonMode(bind, keyDown)
-                            ClearOverrideBindings(bind)
-                            local cmd = prefix .. i
-                            local k1, k2 = GetBindingKey(cmd)
-                            if k1 then
-                                SetOverrideBindingClick(bind, false, k1, bind:GetName(), "HOTKEY")
-                            end
-                            if k2 then
-                                SetOverrideBindingClick(bind, false, k2, bind:GetName(), "HOTKEY")
-                            end
-                        end
                     end
+                    -- Action bars 1-8 use native bindings: no override needed.
                 end
             end
         end
@@ -5585,16 +5435,14 @@ local function ClearKeybindsForVehicle()
     if _bindState.vehicleCleared then return end
     _bindState.vehicleCleared = true
     if InCombatLockdown() then return end
+    -- Only stance/pet bars use override bindings; action bars 1-8 use
+    -- native bindings that Blizzard manages during vehicle/override.
     for _, info in ipairs(BAR_CONFIG) do
-        local btns = barButtons[info.key]
-        if btns then
-            for _, btn in ipairs(btns) do
-                if btn then
-                    if info.isStance or info.isPetBar then
-                        ClearOverrideBindings(btn)
-                    elseif btn._bindBtn then
-                        ClearOverrideBindings(btn._bindBtn)
-                    end
+        if info.isStance or info.isPetBar then
+            local btns = barButtons[info.key]
+            if btns then
+                for _, btn in ipairs(btns) do
+                    if btn then ClearOverrideBindings(btn) end
                 end
             end
         end
@@ -5721,15 +5569,11 @@ if IsHouseEditorActive then
             _bindState.housingCleared = true
             if not InCombatLockdown() then
                 for _, info in ipairs(BAR_CONFIG) do
-                    local btns = barButtons[info.key]
-                    if btns then
-                        for _, btn in ipairs(btns) do
-                            if btn then
-                                if info.isStance or info.isPetBar then
-                                    ClearOverrideBindings(btn)
-                                elseif btn._bindBtn then
-                                    ClearOverrideBindings(btn._bindBtn)
-                                end
+                    if info.isStance or info.isPetBar then
+                        local btns = barButtons[info.key]
+                        if btns then
+                            for _, btn in ipairs(btns) do
+                                if btn then ClearOverrideBindings(btn) end
                             end
                         end
                     end
@@ -6294,37 +6138,13 @@ function EAB:FinishSetup()
             end
             RestoreBarPositions()
             EAB.AnchorVehicleButton()
-            -- Set up MainBar paging
-            local mainFrame = barFrames["MainBar"]
-            if mainFrame then
-                local curOffset = mainFrame:GetAttribute("actionOffset") or 0
-                local mainBtns = barButtons["MainBar"]
-                if mainBtns then
-                    for i, btn in ipairs(mainBtns) do
-                        if btn then
-                            btn:SetAttribute("index", i)
-                            btn:SetAttribute("_childupdate-offset", [[
-                                local offset = message or 0
-                                local id = self:GetAttribute("index") + offset
-                                if self:GetAttribute("action") ~= id then
-                                    self:SetAttribute("action", id)
-                                end
-                            ]])
-                            btn:SetAttribute("action", i + curOffset)
-                        end
-                    end
-                end
-            end
+            -- MainBar paging: ActionButton1-12 keep their IDs and derive action
+            -- via CalculateAction path 1. The _onstate-page handler on the bar
+            -- frame sets actionpage from the restricted env for form/vehicle/override.
         else
             -- Combat reload: non-protected setup only; secure handler does the rest.
-            -- Stock bar disposal already happened at file load time.
-            -- Attribute drivers are combat-safe.
-            if ActionBarParent then
-                RegisterAttributeDriver(ActionBarParent, "state-visibility", "[vehicleui][overridebar] show; hide")
-            end
-            if OverrideActionBar then
-                RegisterAttributeDriver(OverrideActionBar, "state-visibility", "[vehicleui][overridebar] show; hide")
-            end
+            -- Stock bar disposal (including ActionBarParent) already happened at
+            -- file load time. OverrideActionBar is fully Blizzard-owned.
             C_CVar.SetCVar("SHOW_MULTI_ACTIONBAR_1", "1")
             C_CVar.SetCVar("SHOW_MULTI_ACTIONBAR_2", "1")
             C_CVar.SetCVar("SHOW_MULTI_ACTIONBAR_3", "1")
@@ -6362,7 +6182,6 @@ function EAB:FinishSetup()
                             local actionSlot = 0
                             if key == "MainBar" then
                                 -- For MainBar, actionSlot encodes the button index (1-12)
-                                -- so the secure snippet can set up _childupdate-offset paging
                                 actionSlot = i
                             elseif info.isPetBar then
                                 -- PetActionButtons use their index (1-10) as their slot ID
@@ -6376,6 +6195,9 @@ function EAB:FinishSetup()
                                 w = btnData.w, h = btnData.h,
                                 show = btnData.show,
                                 actionSlot = actionSlot,
+                                -- nativePage > 0: native-dispatch bar with fixed actionpage
+                                -- nativePage = -1: MainBar (native dispatch, no fixed page)
+                                nativePage = info.nativeActionPage or (info.nativeMainBar and -1) or 0,
                             }
                         end
                     end
