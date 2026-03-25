@@ -669,9 +669,22 @@ end
 -------------------------------------------------------------------------------
 local EABFlyout = CreateFrame("Frame")
 
--- Secure snippet: intercepts flyout-type action clicks on registered buttons
+-- Secure snippet: intercepts flyout-type action clicks on registered buttons.
+-- Computes the action slot inline (mirroring CalculateAction) so it works for
+-- both native-dispatch buttons (ID > 0, page-based) and legacy buttons (ID == 0,
+-- explicit action attribute).
 local SEC_CLICK_HOOK = [[
-    local actionKind, actionVal = GetActionInfo(self:GetEffectiveAttribute("action", button))
+    local id = self:GetID()
+    local action
+    if id > 0 then
+        local page = self:GetEffectiveAttribute("actionpage", button)
+        if not page then page = GetActionBarPage() end
+        action = id + ((page - 1) * 12)
+    else
+        action = self:GetEffectiveAttribute("action", button) or 0
+    end
+
+    local actionKind, actionVal = GetActionInfo(action)
     if actionKind == "flyout" then
         if not down then
             control:SetAttribute("caller", self:GetFrameRef("_eabFlyOwner") or self)

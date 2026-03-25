@@ -21,7 +21,11 @@ local PP = EllesmereUI.PP
 -- shared dispatch surface without adding more direct top-level helpers.
 local EAB_VTABLE = {
     ExtraBars = {},
+    CooldownFonts = {},
+    Hover = {},
+    MainBarPageSync = {},
 }
+EAB.VisibilityCompat = EAB.VisibilityCompat or {}
 
 -------------------------------------------------------------------------------
 --  Upvalues
@@ -36,19 +40,30 @@ local C_Timer_After = C_Timer.After
 local RegisterStateDriver = RegisterStateDriver
 local RegisterAttributeDriver = RegisterAttributeDriver
 local GetBindingKey = GetBindingKey
+local NUM_ACTIONBAR_BUTTONS = NUM_ACTIONBAR_BUTTONS or 12
 
 -------------------------------------------------------------------------------
 --  Bar configuration
 -------------------------------------------------------------------------------
 local BAR_CONFIG = {
-    { key = "MainBar",   label = "Action Bar 1 (Main)", barID = 1,  count = 12, blizzBtnPrefix = "ActionButton",              blizzFrame = "MainMenuBar" },
-    { key = "Bar2",      label = "Action Bar 2",        barID = 2,  count = 12, blizzBtnPrefix = "MultiBarBottomLeftButton",   blizzFrame = "MultiBarBottomLeft" },
-    { key = "Bar3",      label = "Action Bar 3",        barID = 3,  count = 12, blizzBtnPrefix = "MultiBarBottomRightButton",  blizzFrame = "MultiBarBottomRight" },
-    { key = "Bar4",      label = "Action Bar 4",        barID = 4,  count = 12, blizzBtnPrefix = "MultiBarRightButton",        blizzFrame = "MultiBarRight" },
-    { key = "Bar5",      label = "Action Bar 5",        barID = 5,  count = 12, blizzBtnPrefix = "MultiBarLeftButton",         blizzFrame = "MultiBarLeft" },
-    { key = "Bar6",      label = "Action Bar 6",        barID = 6,  count = 12, blizzBtnPrefix = "MultiBar5Button",          blizzFrame = "MultiBar5" },
-    { key = "Bar7",      label = "Action Bar 7",        barID = 7,  count = 12, blizzBtnPrefix = "MultiBar6Button",          blizzFrame = "MultiBar6" },
-    { key = "Bar8",      label = "Action Bar 8",        barID = 8,  count = 12, blizzBtnPrefix = "MultiBar7Button",          blizzFrame = "MultiBar7" },
+    -- nativeMainBar: MainBar buttons keep their native IDs (1-12) and derive
+    -- action via CalculateAction path 1. The bar frame's _onstate-page handler
+    -- sets actionpage from the restricted env for form/vehicle/override paging.
+    -- Keyboard input flows through Blizzard's native
+    -- ActionButtonDown/Up → GetActionButtonForID → _G["ActionButton"..id].
+    { key = "MainBar",   label = "Action Bar 1 (Main)", barID = 1,  count = 12, blizzBtnPrefix = "ActionButton",              blizzFrame = "MainMenuBar", nativeMainBar = true },
+    -- nativeActionPage: the Blizzard actionpage for this bar's slot range.
+    -- Buttons keep their native IDs and derive the action via
+    --   CalculateAction path 1: action = ID + (page - 1) * 12.
+    -- Keyboard input flows through Blizzard's native MultiActionButtonDown/Up
+    -- so UseAction receives isKeyPress=true (required for press-and-hold casting).
+    { key = "Bar2",      label = "Action Bar 2",        barID = 2,  count = 12, blizzBtnPrefix = "MultiBarBottomLeftButton",   blizzFrame = "MultiBarBottomLeft",  nativeActionPage = 6 },
+    { key = "Bar3",      label = "Action Bar 3",        barID = 3,  count = 12, blizzBtnPrefix = "MultiBarBottomRightButton",  blizzFrame = "MultiBarBottomRight", nativeActionPage = 5 },
+    { key = "Bar4",      label = "Action Bar 4",        barID = 4,  count = 12, blizzBtnPrefix = "MultiBarRightButton",        blizzFrame = "MultiBarRight",       nativeActionPage = 3 },
+    { key = "Bar5",      label = "Action Bar 5",        barID = 5,  count = 12, blizzBtnPrefix = "MultiBarLeftButton",         blizzFrame = "MultiBarLeft",        nativeActionPage = 4 },
+    { key = "Bar6",      label = "Action Bar 6",        barID = 6,  count = 12, blizzBtnPrefix = "MultiBar5Button",          blizzFrame = "MultiBar5",           nativeActionPage = 13 },
+    { key = "Bar7",      label = "Action Bar 7",        barID = 7,  count = 12, blizzBtnPrefix = "MultiBar6Button",          blizzFrame = "MultiBar6",           nativeActionPage = 14 },
+    { key = "Bar8",      label = "Action Bar 8",        barID = 8,  count = 12, blizzBtnPrefix = "MultiBar7Button",          blizzFrame = "MultiBar7",           nativeActionPage = 15 },
     { key = "StanceBar", label = "Stance Bar",          barID = 0,  count = 10, blizzBtnPrefix = "StanceButton",               blizzFrame = "StanceBar", isStance = true },
     { key = "PetBar",    label = "Pet Bar",             barID = 0,  count = 10, blizzBtnPrefix = "PetActionButton",            blizzFrame = "PetActionBar", isPetBar = true },
 }
@@ -76,6 +91,7 @@ for _, info in ipairs(EXTRA_BARS) do ALL_BARS[#ALL_BARS + 1] = info end
 
 local BAR_LOOKUP = {}
 for _, info in ipairs(BAR_CONFIG) do BAR_LOOKUP[info.key] = info end
+for _, info in ipairs(EXTRA_BARS) do BAR_LOOKUP[info.key] = info end
 
 local BAR_DROPDOWN_VALUES = {}
 local BAR_DROPDOWN_ORDER = {}
@@ -107,6 +123,65 @@ ns.BAR_LOOKUP          = BAR_LOOKUP
 ns.ALL_BARS            = ALL_BARS
 ns.EXTRA_BARS          = EXTRA_BARS
 
+function EAB.VisibilityCompat.ApplyMode(settings, mode)
+    if not settings then return "always" end
+
+    mode = mode or "always"
+    settings.barVisibility = mode
+    settings.alwaysHidden = (mode == "never")
+
+    local wasMouseover = settings.mouseoverEnabled
+    settings.mouseoverEnabled = (mode == "mouseover")
+    if mode == "mouseover" then
+        if not wasMouseover then
+            settings._savedBarAlpha = settings.mouseoverAlpha or 1
+        end
+        settings.mouseoverAlpha = 0
+    elseif wasMouseover and settings._savedBarAlpha then
+        settings.mouseoverAlpha = settings._savedBarAlpha
+        settings._savedBarAlpha = nil
+    end
+
+    settings.combatHideEnabled = (mode == "out_of_combat")
+    settings.combatShowEnabled = (mode == "in_combat")
+    return mode
+end
+
+function EAB.VisibilityCompat.Normalize(settings)
+    if not settings then return "always" end
+    if settings.barVisibility then
+        return EAB.VisibilityCompat.ApplyMode(settings, settings.barVisibility)
+    end
+    if settings.alwaysHidden then
+        return EAB.VisibilityCompat.ApplyMode(settings, "never")
+    end
+    if settings.mouseoverEnabled then
+        return EAB.VisibilityCompat.ApplyMode(settings, "mouseover")
+    end
+    if settings.combatShowEnabled then
+        return EAB.VisibilityCompat.ApplyMode(settings, "in_combat")
+    end
+    if settings.combatHideEnabled then
+        return EAB.VisibilityCompat.ApplyMode(settings, "out_of_combat")
+    end
+    return EAB.VisibilityCompat.ApplyMode(settings, "always")
+end
+
+function EAB.VisibilityCompat.Copy(dst, src)
+    if not dst or not src then return end
+
+    local mode = EAB.VisibilityCompat.Normalize(src)
+    EAB.VisibilityCompat.ApplyMode(dst, mode)
+
+    if mode == "mouseover" then
+        dst._savedBarAlpha = src._savedBarAlpha or src.mouseoverAlpha or 1
+        dst.mouseoverAlpha = 0
+    else
+        dst.mouseoverAlpha = src.mouseoverAlpha
+        dst._savedBarAlpha = nil
+    end
+end
+
 function EAB_VTABLE.ExtraBars.PatchDetachedQueueStatusLayout()
     if not MicroMenuContainer or MicroMenuContainer._eabDetachedQueueLayout then return end
     MicroMenuContainer._eabDetachedQueueLayout = true
@@ -116,6 +191,12 @@ function EAB_VTABLE.ExtraBars.PatchDetachedQueueStatusLayout()
         if not QueueStatusButton or QueueStatusButton:GetParent() == self then
             return self._eabOriginalLayout(self)
         end
+
+        -- MicroMenu:Layout() calls MicroMenuContainer:GetPosition() which
+        -- needs valid GetCenter() coordinates. Skip the layout when the
+        -- container has just become visible and the layout system hasn't
+        -- resolved screen coordinates yet.
+        if not self:GetCenter() then return end
 
         -- Once the queue eye lives in its own holder, fall back to the same
         -- container sizing logic but exclude detached queue-eye geometry.
@@ -623,6 +704,17 @@ do
             end
         end
     end
+
+    -- Hide ActionBarParent (the top-level container for stock action bars).
+    -- All individual bar frames are already reparented above, so this is
+    -- purely cosmetic (hides any leftover chrome). OverrideActionBar is
+    -- parented to UIParent, not ActionBarParent, so it is unaffected.
+    -- Done here at file-load time instead of via RegisterAttributeDriver
+    -- to avoid tainting Blizzard's protected frame state.
+    if ActionBarParent then
+        ActionBarParent:Hide()
+        ActionBarParent:SetParent(hiddenParent)
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -968,9 +1060,26 @@ _secureHandler:SetAttribute("_onattributechanged", [=[
                     btnRef:SetID(petIndex)
                     btnRef:SetAttribute("action", nil)
                 else
-                    btnRef:SetID(0)
-                    if actionSlot and actionSlot ~= "" and actionSlot ~= "0" then
-                        btnRef:SetAttribute("action", tonumber(actionSlot))
+                    -- nativePage encodes the native dispatch mode:
+                    --   > 0: fixed-page bar (2-8), set actionpage on bar frame
+                    --   -1:  MainBar, actionpage set by _onstate-page on bar frame
+                    --   0:   legacy path, uses explicit action attribute
+                    local nativePage = tonumber(self:GetAttribute("layout-nativepage-" .. slot)) or 0
+                    if nativePage > 0 then
+                        -- Bars 2-8: keep native ID, set actionpage on bar frame
+                        -- from restricted env so CalculateAction path 1 works.
+                        barRef:SetAttribute("actionpage", nativePage)
+                        btnRef:SetAttribute("action", nil)
+                    elseif nativePage < 0 then
+                        -- MainBar: keep native ID, clear explicit action.
+                        -- actionpage is set by the _onstate-page handler on the
+                        -- bar frame, inherited via useparent-actionpage.
+                        btnRef:SetAttribute("action", nil)
+                    else
+                        btnRef:SetID(0)
+                        if actionSlot and actionSlot ~= "" and actionSlot ~= "0" then
+                            btnRef:SetAttribute("action", tonumber(actionSlot))
+                        end
                     end
                 end
                 if show == "1" then
@@ -1004,36 +1113,12 @@ _secureHandler:SetAttribute("_onattributechanged", [=[
         end
     end
 
-    -- Step 5: Set up MainBar paging attributes on buttons.
-    -- _childupdate-offset can only be set from the restricted environment on
-    -- protected frames, so we do it here rather than from normal Lua.
-    -- For MainBar buttons, actionSlot encodes the button index (1-12).
-    local mainOffset = self:GetAttribute("mainbar-offset") or 0
-    for slot = 1, btnCount do
-        local data = self:GetAttribute("layout-" .. slot)
-        if data then
-            local barKey, _, _, _, _, _, actionSlot = strsplit("|", data)
-            if barKey == "MainBar" then
-                local idx = tonumber(actionSlot) or 0
-                if idx > 0 then
-                    local btnRef = self:GetFrameRef("btn-" .. slot)
-                    if btnRef then
-                        btnRef:SetAttribute("index", idx)
-                        btnRef:SetAttribute("_childupdate-offset", [[
-                            local offset = message or 0
-                            local id = self:GetAttribute("index") + offset
-                            if self:GetAttribute("action") ~= id then
-                                self:SetAttribute("action", id)
-                            end
-                        ]])
-                        btnRef:SetAttribute("action", idx + mainOffset)
-                    end
-                end
-            end
-        end
-    end
+    -- Step 5: MainBar paging is driven by the _onstate-page handler on the
+    -- bar frame, which sets actionpage from the restricted env. Buttons
+    -- inherit it via useparent-actionpage. No _childupdate-offset needed.
 
-    -- Step 6: Keybinds are handled via override bindings in UpdateKeybinds().
+    -- Step 6: Bars 1-8 use native Blizzard keybind dispatch (no overrides).
+    -- Stance/pet bars use override bindings set by UpdateKeybinds().
 ]=])
 
 -- Register all Blizzard buttons and bar frames as refs on the secure handler.
@@ -1104,7 +1189,7 @@ local function SecureSetupHandler_RegisterBarFrame(key, frame)
 end
 
 -- Encode layout data for all buttons as attributes, then trigger the snippet.
--- layoutData: table of { slot = { barKey, x, y, w, h, show, actionSlot } }
+-- layoutData: table of { slot = { barKey, x, y, w, h, show, actionSlot, nativePage } }
 -- barFrameData: table of { key, w, h, point, relPoint, x, y }
 local function SecureSetupHandler_Execute(layoutData, barFrameData)
     -- Encode button layout
@@ -1112,6 +1197,9 @@ local function SecureSetupHandler_Execute(layoutData, barFrameData)
         local actionSlot = d.actionSlot or 0
         _secureHandler:SetAttribute("layout-" .. slot,
             d.barKey .. "|" .. d.x .. "|" .. d.y .. "|" .. d.w .. "|" .. d.h .. "|" .. (d.show and "1" or "0") .. "|" .. actionSlot)
+        -- Native-dispatch bars: pass nativeActionPage so the secure snippet
+        -- keeps the button's native ID and sets actionpage on the bar frame.
+        _secureHandler:SetAttribute("layout-nativepage-" .. slot, d.nativePage or 0)
     end
     -- Encode bar frame sizes/positions
     local barFrameCount = 0
@@ -1121,10 +1209,6 @@ local function SecureSetupHandler_Execute(layoutData, barFrameData)
             d.key .. "|" .. d.w .. "|" .. d.h .. "|" .. d.point .. "|" .. d.relPoint .. "|" .. d.x .. "|" .. d.y .. "|" .. (d.hidden and "1" or "0"))
     end
     _secureHandler:SetAttribute("barframe-count", barFrameCount)
-    -- Pass current MainBar page offset so the snippet can set initial action slots
-    local mainFrame = barFrames["MainBar"]
-    local mainOffset = mainFrame and (mainFrame:GetAttribute("actionOffset") or 0) or 0
-    _secureHandler:SetAttribute("mainbar-offset", mainOffset)
     -- Native Blizzard keybinds: no override bind data needed for combat reload.
     _secureHandler:SetAttribute("bind-count", 0)
     -- Trigger the snippet
@@ -1227,20 +1311,12 @@ local function HideBlizzardBars()
             StatusTrackingBarManager:Hide()
         end
     end
-    -- Hide ActionBarParent normally; show it during full vehicle UI so
-    -- Blizzard's vehicle bar can render.  Combat-safe via attribute driver.
-    if ActionBarParent then
-        RegisterAttributeDriver(ActionBarParent, "state-visibility",
-            "[vehicleui][overridebar] show; hide")
-    end
-    -- Let Blizzard's OverrideActionBar show itself for override bars and
-    -- skinned vehicles (quest mini-vehicles, encounter abilities, etc.).
-    -- Blizzard's ActionBarController handles populating it correctly.
-    -- Combat-safe via attribute driver -- no direct Hide() calls.
-    if OverrideActionBar then
-        RegisterAttributeDriver(OverrideActionBar, "state-visibility",
-            "[vehicleui][overridebar] show; hide")
-    end
+    -- ActionBarParent is hidden at file-load time (early disposal).
+    -- OverrideActionBar visibility is fully owned by Blizzard's
+    -- ValidateActionBarTransition() in ActionBarController.lua.
+    -- No RegisterAttributeDriver calls on Blizzard-owned frames — those
+    -- risk tainting protected state (actionpage, action attributes) that
+    -- OverrideActionBar buttons inherit.
     -- Debug: /eabdrag to check button state for drag issues
     SLASH_EABDRAG1 = "/eabdrag"
     SlashCmdList["EABDRAG"] = function(msg)
@@ -1352,7 +1428,7 @@ end
 
 -- Forward declaration -- defined fully in the keybind section below.
 -- Allows SetupBar to eagerly create bind buttons while out of combat.
-local GetOrCreateBindButton
+-- (bind-button forward declaration removed: all action bars use native dispatch)
 -------------------------------------------------------------------------------
 --  Re-register events on action buttons after HideBlizzardBars unregistered
 --  them. These are the events that Blizzard's button mixins need for
@@ -1429,6 +1505,13 @@ local function GetOrCreateButton(slot, parent, info, index, skipProtected)
         -- by global name and already calls DoModeChange on them. Setting the
         -- flag would cause EAB_UpdateQuickKeybindButtons to double-toggle
         -- their QKB highlight.
+        -- Break the .bar reference so ActionBarActionButtonMixin:UpdateAction
+        -- does not call self.bar:UpdateShownButtons() on the hidden Blizzard
+        -- bar frame. Blizzard sets this as lowercase .bar (ActionBar.lua:33).
+        -- This is a plain Lua field (not a protected attribute), so it must
+        -- be cleared unconditionally — including the combat-reload path where
+        -- Blizzard's OnLoad has already set btn.bar to the stock bar frame.
+        btn.bar = nil
         if not skipProtected then
             -- Clear statehidden set during HideBlizzardBars so the button
             -- becomes visible again under our control.
@@ -1437,8 +1520,16 @@ local function GetOrCreateButton(slot, parent, info, index, skipProtected)
             ReRegisterButtonEvents(btn, "action")
             -- Reparent the Blizzard button to our bar frame
             btn:SetParent(parent)
-            btn:SetID(0)  -- Reset ID to avoid Blizzard paging interference
-            btn.Bar = nil  -- Drop reference to Blizzard bar parent
+            if info.nativeActionPage or info.nativeMainBar then
+                -- Native-dispatch bars: keep the original button ID (1-12) so
+                -- CalculateAction uses path 1. Bars 2-8 use a fixed actionpage
+                -- on the parent frame; MainBar's actionpage is driven by the
+                -- _onstate-page handler. Keyboard input flows through Blizzard's native
+                -- ActionButtonDown/Up or MultiActionButtonDown/Up which passes
+                -- isKeyPress=true.
+            else
+                btn:SetID(0)  -- Reset ID to avoid Blizzard paging interference
+            end
             btn:Show()
         end
     else
@@ -1714,13 +1805,11 @@ ns.LayoutPagingFrame = LayoutPagingFrame
 
 -------------------------------------------------------------------------------
 --  Secure Bar Frame Creation
---  Each bar gets a SecureHandlerStateTemplate frame that manages paging.
---  Paging uses the _childupdate-offset pattern: the parent frame
---  computes an action offset and broadcasts it to children via ChildUpdate.
---  Each button has a _childupdate-offset handler that sets its own action.
+--  Each bar gets a SecureHandlerStateTemplate frame. Bars 2-8 set a fixed
+--  actionpage on the frame; MainBar sets actionpage via a _onstate-page
+--  handler. Buttons derive their action via CalculateAction path 1
+--  (ID + (page-1)*12) with native IDs.
 -------------------------------------------------------------------------------
-local NUM_ACTIONBAR_BUTTONS = NUM_ACTIONBAR_BUTTONS or 12
-
 local function CreateBarFrame(info)
     local key = info.key
     local frame = CreateFrame("Frame", "EABBar_" .. key, UIParent, "SecureHandlerStateTemplate")
@@ -1735,59 +1824,52 @@ local function CreateBarFrame(info)
     frame._barInfo = info
 
     if key == "MainBar" then
-        -- Main bar uses paging via state driver
+        -- MainBar uses native keyboard dispatch: ActionButton1-12 keep their
+        -- IDs and derive action via CalculateAction path 1 (page-based).
+        --
+        -- Buttons inherit actionpage from this bar frame via useparent-actionpage.
+        -- The state driver evaluates class-specific paging conditions (forms,
+        -- vehicle, override, possess, bonus bars) and the _onstate-page handler
+        -- propagates the result to actionpage from the restricted env (untainted).
+        --
+        -- C_ActionBar.GetActionBarPage() is NOT sufficient as a fallback because
+        -- it only returns the "manual" page (Ctrl+PageUp/Down), not the dynamic
+        -- page set by ActionBarController_UpdateAll for vehicle/override/form
+        -- states. Blizzard normally handles this by setting actionpage directly
+        -- on MainActionBar, but our buttons are parented to EABBar_MainBar.
         local pagingConditions = GetClassPagingConditions()
 
-        frame:SetAttribute("barLength", NUM_ACTIONBAR_BUTTONS)
-        frame:SetAttribute("overrideBarLength", NUM_ACTIONBAR_BUTTONS)
-
-        -- Listen for override page and override bar state changes
-        -- from the OverrideController so we can remap to vehicle/possess slots.
-        frame:SetAttribute("_onstate-overridebar", [[ self:RunAttribute("UpdateOffset") ]])
-        frame:SetAttribute("_onstate-overridepage", [[ self:RunAttribute("UpdateOffset") ]])
-        frame:SetAttribute("_onstate-page", [[ self:RunAttribute("UpdateOffset") ]])
-
-        -- Unified offset calculation: checks override page first, then
-        -- falls back to normal paging. Skips the unusable slot 132 range.
-        frame:SetAttribute("UpdateOffset", [[
-            local offset = 0
-
-            local overridePage = self:GetAttribute("state-overridepage") or 0
-            if overridePage > 0 and self:GetAttribute("state-overridebar") then
-                offset = (overridePage - 1) * self:GetAttribute("overrideBarLength")
-            else
-                local page = self:GetAttribute("state-page") or 1
-
-                -- Possess/bonus bar fallback: resolve the real page index
-                if page == 11 then
-                    if HasVehicleActionBar() then
-                        page = GetVehicleBarIndex()
-                    elseif HasOverrideActionBar() then
-                        page = GetOverrideBarIndex()
-                    elseif HasTempShapeshiftActionBar() then
-                        page = GetTempShapeshiftBarIndex()
-                    elseif HasBonusActionBar() then
-                        page = GetBonusBarIndex()
-                    end
-                end
-
-                local barLen = self:GetAttribute("barLength")
-                offset = (page - 1) * barLen
-
-                -- Skip action bar 12 slots (133-144 are not usable)
-                if offset >= 132 then
-                    offset = offset + 12
-                end
-            end
-
-            self:SetAttribute("actionOffset", offset)
-            control:ChildUpdate("offset", offset)
-        ]])
-
-        -- Mark MainBar as the override bar target
+        -- Mark MainBar as the override bar target so the override controller
+        -- propagates vehicle/override/petbattle state changes.
         frame:SetAttribute("state-overridebar", true)
 
+        -- Propagate the page state to actionpage on this bar frame. Runs in the
+        -- restricted environment so the attribute is untainted. Buttons with
+        -- useparent-actionpage=true inherit it via SecureButton_GetModifiedAttribute.
+        --
+        -- The secure ChildUpdate restores Blizzard's missing second half of the
+        -- paging contract for our custom parent frame: each ActionButton gets an
+        -- attribute change so its normal OnAttributeChanged -> UpdateAction path
+        -- re-evaluates the derived slot even during combat.
+        frame:SetAttributeNoHandler("_onstate-page", [[
+            local page = tonumber(newstate) or 1
+            self:SetAttribute("actionpage", page)
+            self:ChildUpdate("eab-page", page)
+            self:CallMethod("OnEABPageChanged")
+        ]])
+        frame.OnEABPageChanged = function()
+            EAB_VTABLE.MainBarPageSync.Queue()
+        end
+
         RegisterStateDriver(frame, "page", pagingConditions)
+    end
+
+    -- Native-dispatch bars (Bars 2-8): set actionpage from the restricted
+    -- environment so it is untainted. Buttons with useparent-actionpage=true
+    -- (set by ActionBarActionButtonMixin:OnLoad) inherit this value, and
+    -- CalculateAction path 1 computes: action = ID + (page - 1) * 12.
+    if info.nativeActionPage then
+        frame:Execute(("self:SetAttribute('actionpage', %d)"):format(info.nativeActionPage))
     end
 
     barFrames[key] = frame
@@ -1878,85 +1960,23 @@ local function SetupBar(info, skipProtected)
             local slot = slotOffset + i
             local btn
 
-            if key == "MainBar" then
-                -- Create fresh buttons for MainBar. The original
-                -- ActionButton1-12 have C-side visibility management
-                -- that conflicts with our button controller, causing an
-                -- infinite OnEnter/OnLeave loop on buttons beyond the
-                -- Edit Mode icon cap.
-                local name = "EABButton" .. slot
-                btn = allButtons[slot] or _G[name]
-                if not btn then
-                    btn = CreateFrame("CheckButton", name, frame, "ActionBarButtonTemplate")
-                    btn:SetAttributeNoHandler("action", 0)
-                    btn:SetAttributeNoHandler("showgrid", 0)
-                    btn:SetAttributeNoHandler("useparent-checkfocuscast", true)
-                    btn:SetAttributeNoHandler("useparent-checkmouseovercast", true)
-                    btn:SetAttributeNoHandler("useparent-checkselfcast", true)
-                    if not btn.GetPopupDirection then
-                        btn.GetPopupDirection = function(self)
-                            return self:GetAttribute("flyoutDirection") or "UP"
-                        end
-                    end
-                    if btn.TextOverlayContainer then
-                        btn.TextOverlayContainer:EnableMouse(false)
-                        if btn.TextOverlayContainer.SetMouseClickEnabled then
-                            btn.TextOverlayContainer:SetMouseClickEnabled(false)
-                            btn.TextOverlayContainer:SetMouseMotionEnabled(false)
-                        end
-                    end
-                    allButtons[slot] = btn
-                end
-                btn._eabOwnQuickKeybind = true
-
-                RegisterButtonWithController(btn)
-
-                if not skipProtected then
-                    btn:SetParent(frame)
-                    btn:SetAttribute("index", i)
-                    btn:SetAttribute("_childupdate-offset", [[
-                        local offset = message or 0
-                        local id = self:GetAttribute("index") + offset
-                        if self:GetAttribute("action") ~= id then
-                            self:SetAttribute("action", id)
-                        end
-                    ]])
-                    local curOffset = frame:GetAttribute("actionOffset") or 0
-                    btn:SetAttribute("action", i + curOffset)
-                    -- Set binding attribute so QuickKeybind mode can resolve keybinds
-                    local bindPrefix = BINDING_MAP[key]
-                    if bindPrefix then
-                        local bindingStr = bindPrefix .. i
-                        btn:SetAttributeNoHandler("binding", bindingStr)
-                        if btn._bindBtn then
-                            btn._bindBtn:SetAttributeNoHandler("binding", bindingStr)
-                        end
-                    end
-                    -- Force the mixin to update so HasAction/icon state
-                    -- is correct before ApplyAlwaysShowButtons runs.
-                    if btn.UpdateAction then
-                        btn:UpdateAction()
-                    end
-                end
-            else
                 btn = GetOrCreateButton(slot, frame, info, i, skipProtected)
                 if btn then
                     if not skipProtected then
-                        if not info.isStance then
+                        -- Native-dispatch bars derive action from ID + actionpage.
+                        -- Bars 2-8 use a fixed page; MainBar's page is driven by
+                        -- _onstate-page. Skip the explicit action attribute which
+                        -- would select CalculateAction path 2 and bypass native dispatch.
+                        if not info.isStance and not info.nativeActionPage and not info.nativeMainBar then
                             btn:SetAttribute("action", slot)
                         end
                         -- Set binding attribute so QuickKeybind can resolve keybinds
                         local bindPrefix = BINDING_MAP[key]
                         if bindPrefix then
-                            local bindingStr = bindPrefix .. i
-                            btn:SetAttributeNoHandler("binding", bindingStr)
-                            if btn._bindBtn then
-                                btn._bindBtn:SetAttributeNoHandler("binding", bindingStr)
-                            end
+                            btn:SetAttributeNoHandler("binding", bindPrefix .. i)
                         end
                     end
                 end
-            end
 
             if btn then
                 -- commandName is a plain Lua field (not a protected attribute),
@@ -1968,7 +1988,15 @@ local function SetupBar(info, skipProtected)
                 end
                 -- RegisterForClicks and EnableMouseWheel are not protected
                 if btn.RegisterForClicks then
-                    btn:RegisterForClicks("AnyDown", "AnyUp")
+                    if info.nativeActionPage or info.nativeMainBar then
+                        -- Native-dispatch bars: use Blizzard's default registration.
+                        -- ActionBarActionButtonMixin:OnLoad sets AnyUp + LeftButtonDown
+                        -- + RightButtonDown. Action fires on mouse-up; press-and-hold
+                        -- repeat is keyboard-only per Blizzard's design.
+                        btn:RegisterForClicks("AnyUp", "LeftButtonDown", "RightButtonDown")
+                    else
+                        btn:RegisterForClicks("AnyDown", "AnyUp")
+                    end
                 end
                 if btn.EnableMouseWheel then
                     btn:EnableMouseWheel(true)
@@ -1985,6 +2013,9 @@ local function SetupBar(info, skipProtected)
                 if not info.isStance and not info.isPetBar then
                     GetEABFlyout():RegisterButton(btn)
                 end
+                if info.nativeMainBar then
+                    EAB_VTABLE.MainBarPageSync.InstallButton(btn)
+                end
                 buttons[i] = btn
                 buttonToBar[btn] = { barKey = key, index = i }
             end
@@ -1996,9 +2027,14 @@ local function SetupBar(info, skipProtected)
     -- Wipe the Blizzard bar's actionButtons table so that
     -- UpdateShownButtons (called on every OnEnter) has nothing to
     -- iterate. Without this, Blizzard hides buttons beyond
-    -- numButtonsShowable on hover. Keybinds are handled entirely
-    -- through our own override bindings in UpdateKeybinds.
-    if not skipProtected and not info.isStance and not info.isPetBar then
+    -- numButtonsShowable on hover.
+    --
+    -- Native-dispatch bars keep the actionButtons table intact because
+    -- MultiActionButtonDown(barName, id) looks up _G[barName].actionButtons[id]
+    -- to find the button for keyboard dispatch. Instead, we break the
+    -- btn.bar reference (in GetOrCreateButton) so UpdateShownButtons is
+    -- never reached from the button side.
+    if not skipProtected and not info.isStance and not info.isPetBar and not info.nativeActionPage then
         local blizzBar = _G[info.blizzFrame]
         if blizzBar and blizzBar.actionButtons and type(blizzBar.actionButtons) == "table" then
             table.wipe(blizzBar.actionButtons)
@@ -2622,6 +2658,10 @@ local function HideBorder(button)
         button.NormalTexture:Hide()
         button.NormalTexture:SetAlpha(0)
     end
+    if button.Border then
+        button.Border:Hide()
+        button.Border:SetAlpha(0)
+    end
     if button.icon and button.IconMask then
         button.icon:RemoveMaskTexture(button.IconMask)
         -- Neutralize IconMask so Blizzard's UpdateButtonArt can never
@@ -2727,6 +2767,21 @@ local function HideTexture(texture)
     texture:SetAlpha(0)
 end
 
+function EAB_VTABLE.HideRegionDeferred(region, resetAlpha)
+    if not region then return end
+    if not region._eabHideFn then
+        region._eabHideFn = function()
+            if region and not region:IsForbidden() then
+                region:Hide()
+                if resetAlpha then
+                    region:SetAlpha(resetAlpha)
+                end
+            end
+        end
+    end
+    C_Timer_After(0, region._eabHideFn)
+end
+
 local function MakeButtonSquare(btn)
     if btn._eabSquared then return end
     HideBorder(btn)
@@ -2781,12 +2836,7 @@ local function MakeButtonSquare(btn)
             if not prof then return end
             if not prof.hideCastingAnimations and not btn._eabShapeApplied and not btn._eabCropped then return end
             self:SetAlpha(0)
-            if not self._eabHideFn then
-                self._eabHideFn = function()
-                    if self and not self:IsForbidden() then self:Hide(); self:SetAlpha(1) end
-                end
-            end
-            C_Timer_After(0, self._eabHideFn)
+            EAB_VTABLE.HideRegionDeferred(self, 1)
         end)
         btn._eabCastHooked = true
     end
@@ -2796,12 +2846,7 @@ local function MakeButtonSquare(btn)
             if not prof then return end
             if not prof.hideCastingAnimations and not btn._eabShapeApplied and not btn._eabCropped then return end
             self:SetAlpha(0)
-            if not self._eabHideFn then
-                self._eabHideFn = function()
-                    if self and not self:IsForbidden() then self:Hide(); self:SetAlpha(1) end
-                end
-            end
-            C_Timer_After(0, self._eabHideFn)
+            EAB_VTABLE.HideRegionDeferred(self, 1)
         end)
         btn._eabIntHooked = true
     end
@@ -2816,34 +2861,16 @@ local function MakeButtonSquare(btn)
     end
     if btn.SlotArt then btn.SlotArt:Hide() end
     -- Hook Border to suppress Blizzard's item quality overlay (Dragonflight+).
-    -- Blizzard calls Border:SetAtlas() to show quality colors on consumables.
-    -- We re-apply our square texture whenever Blizzard tries to set an atlas,
-    -- and hide it when a custom shape is active (shape border handles visuals).
+    -- Blizzard calls Border:SetAtlas()/Show() on various refreshes. EAB owns
+    -- the visible border entirely, so the Blizzard overlay must stay hidden.
     if btn.Border and not btn._eabBorderHooked then
-        local _borderGuard = false
         hooksecurefunc(btn.Border, "SetAtlas", function(self)
-            if _borderGuard then return end
-            _borderGuard = true
-            if btn._eabShapeApplied then
-                self:Hide()
-            else
-                self:SetAtlas(nil)
-                self:SetTexture(HIGHLIGHT_TEXTURES[1])
-                self:SetTexCoord(0, 1, 0, 1)
-                self:ClearAllPoints()
-                self:SetAllPoints(btn)
-            end
-            _borderGuard = false
+            self:SetAlpha(0)
+            EAB_VTABLE.HideRegionDeferred(self)
         end)
         hooksecurefunc(btn.Border, "Show", function(self)
-            if btn._eabShapeApplied then
-                if not self._eabBorderHideFn then
-                    self._eabBorderHideFn = function()
-                        if self and not self:IsForbidden() then self:Hide() end
-                    end
-                end
-                C_Timer_After(0, self._eabBorderHideFn)
-            end
+            self:SetAlpha(0)
+            EAB_VTABLE.HideRegionDeferred(self)
         end)
         btn._eabBorderHooked = true
     end
@@ -3347,7 +3374,8 @@ function EAB:ApplyBarOpacity(barKey)
 end
 
 function EAB:BarSupportsOrientation(barKey)
-    return BAR_LOOKUP[barKey] ~= nil
+    local info = BAR_LOOKUP[barKey]
+    return info and info.count ~= nil or false
 end
 
 function EAB:GetOrientationForBar(barKey)
@@ -3483,40 +3511,65 @@ end
 -------------------------------------------------------------------------------
 --  Cooldown Countdown Font Override
 -------------------------------------------------------------------------------
+function EAB_VTABLE.CooldownFonts.GetSettings(s)
+    return (EllesmereUI and EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("actionBars")) or FONT_PATH,
+        s.cooldownFontSize or 12,
+        s.cooldownTextXOffset or 0,
+        s.cooldownTextYOffset or 0,
+        s.cooldownTextColor or { r = 1, g = 1, b = 1 }
+end
+
+function EAB_VTABLE.CooldownFonts.ApplyToFrame(cdFrame, fontPath, cdSize, cdOX, cdOY, cdColor)
+    if not cdFrame then return false end
+
+    for ri = 1, cdFrame:GetNumRegions() do
+        local region = select(ri, cdFrame:GetRegions())
+        if region and region.GetObjectType and region:GetObjectType() == "FontString" then
+            region:SetFont(fontPath, cdSize, "OUTLINE")
+            region:SetShadowOffset(0, 0)
+            region:SetTextColor(cdColor.r, cdColor.g, cdColor.b)
+            region:ClearAllPoints()
+            region:SetPoint("CENTER", cdFrame, "CENTER", cdOX, cdOY)
+            return true
+        end
+    end
+
+    return false
+end
+
+function EAB_VTABLE.CooldownFonts.ApplyToButton(btn, fontPath, cdSize, cdOX, cdOY, cdColor)
+    if not btn then return end
+
+    local applied = EAB_VTABLE.CooldownFonts.ApplyToFrame(btn.cooldown, fontPath, cdSize, cdOX, cdOY, cdColor)
+    EAB_VTABLE.CooldownFonts.ApplyToFrame(btn.chargeCooldown, fontPath, cdSize, cdOX, cdOY, cdColor)
+    if applied then return end
+
+    -- Some cooldown frames create their countdown FontString lazily on the
+    -- first update after SetCooldown(). Retry once on the next frame.
+    C_Timer_After(0, function()
+        EAB_VTABLE.CooldownFonts.ApplyToFrame(btn.cooldown, fontPath, cdSize, cdOX, cdOY, cdColor)
+        EAB_VTABLE.CooldownFonts.ApplyToFrame(btn.chargeCooldown, fontPath, cdSize, cdOX, cdOY, cdColor)
+    end)
+end
+
 function EAB:ApplyCooldownFontsForBar(barKey)
     local s = self.db.profile.bars[barKey]
     if not s then return end
     local buttons = barButtons[barKey]
     if not buttons then return end
-    local fontPath = EllesmereUI and EllesmereUI.GetFontPath and EllesmereUI.GetFontPath("actionBars") or FONT_PATH
-    local cdSize = s.cooldownFontSize or 12
-    local cdOX = s.cooldownTextXOffset or 0
-    local cdOY = s.cooldownTextYOffset or 0
-    local cdColor = s.cooldownTextColor or { r = 1, g = 1, b = 1 }
+    local fontPath, cdSize, cdOX, cdOY, cdColor = EAB_VTABLE.CooldownFonts.GetSettings(s)
 
     C_Timer.After(0, function()
         for i = 1, #buttons do
             local btn = buttons[i]
             if not btn then break end
-            local cd = btn.cooldown
-            if cd then
-                for ri = 1, cd:GetNumRegions() do
-                    local region = select(ri, cd:GetRegions())
-                    if region and region.GetObjectType and region:GetObjectType() == "FontString" then
-                        region:SetFont(fontPath, cdSize, "OUTLINE")
-                        region:SetShadowOffset(0, 0)
-                        region:SetTextColor(cdColor.r, cdColor.g, cdColor.b)
-                        region:ClearAllPoints()
-                        region:SetPoint("CENTER", cd, "CENTER", cdOX, cdOY)
-                        break
-                    end
-                end
-            end
+            EAB_VTABLE.CooldownFonts.ApplyToButton(btn, fontPath, cdSize, cdOX, cdOY, cdColor)
         end
     end)
 end
 
 function EAB:ApplyCooldownFonts()
+    EAB_VTABLE.CooldownFonts.HookAll()
     for _, info in ipairs(BAR_CONFIG) do
         self:ApplyCooldownFontsForBar(info.key)
     end
@@ -3596,6 +3649,9 @@ function EAB:ApplyAlwaysShowButtons(barKey)
     for i = 1, numIcons do
         local btn = buttons[i]
         if btn then
+            if info.nativeMainBar then
+                EAB_VTABLE.MainBarPageSync.SetButtonConfig(btn, true, showEmpty)
+            end
             local hasAction = ButtonHasAction(btn, info.blizzBtnPrefix)
             local visible = showEmpty or hasAction or quickKeybindVisible
 
@@ -3638,6 +3694,9 @@ function EAB:ApplyAlwaysShowButtons(barKey)
     for i = numIcons + 1, #buttons do
         local btn = buttons[i]
         if btn then
+            if info.nativeMainBar then
+                EAB_VTABLE.MainBarPageSync.SetButtonConfig(btn, false, showEmpty)
+            end
             btn:SetAlpha(0)
             SafeEnableMouse(btn, false)
             if not InCombatLockdown() then
@@ -3654,6 +3713,80 @@ function EAB:ApplyAlwaysShowButtons(barKey)
 end
 
 -------------------------------------------------------------------------------
+--  Main Bar Page Sync
+--  EAB owns MainBar paging through a custom secure parent frame, so Blizzard's
+--  stock ActionBarController no longer runs its usual "set actionpage, then
+--  refresh every button" sequence for ActionButton1-12.  We restore that
+--  contract here by:
+--    1. tracking page-sensitive visibility inputs on the buttons, and
+--    2. using a secure child-update from the MainBar frame to trigger the
+--       buttons' normal OnAttributeChanged -> UpdateAction path in combat.
+-------------------------------------------------------------------------------
+function EAB_VTABLE.MainBarPageSync.SetButtonConfig(btn, withinCutoff, showEmpty)
+    if not btn or InCombatLockdown() then return end
+    btn:SetAttributeNoHandler("eab-withincutoff", withinCutoff and 1 or 0)
+    btn:SetAttributeNoHandler("eab-showempty", showEmpty and 1 or 0)
+end
+
+function EAB_VTABLE.MainBarPageSync.Queue()
+    local state = EAB_VTABLE.MainBarPageSync
+    if state.pending then return end
+    state.pending = true
+    C_Timer_After(0, function()
+        state.pending = false
+        if InCombatLockdown() or not EAB or not EAB.db then return end
+        EAB:ApplyAlwaysShowButtons("MainBar")
+    end)
+end
+
+function EAB_VTABLE.MainBarPageSync.InstallAll()
+    if InCombatLockdown() then return end
+    local buttons = barButtons["MainBar"]
+    if not buttons then return end
+    for _, btn in ipairs(buttons) do
+        EAB_VTABLE.MainBarPageSync.InstallButton(btn)
+    end
+end
+
+function EAB_VTABLE.MainBarPageSync.InstallButton(btn)
+    if not btn or btn:GetAttribute("_eabPageSyncInstalled") or InCombatLockdown() then return end
+
+    btn:SetAttributeNoHandler("_childupdate-eab-page", ([[
+        local page = tonumber(message) or 1
+        local visible = self:GetAttribute("eab-withincutoff") ~= 0
+
+        if visible and self:GetAttribute("eab-showempty") == 0 then
+            local slot = self:GetID() + ((page - 1) * %d)
+            visible = HasAction(slot)
+        end
+
+        local hidden = self:GetAttribute("statehidden")
+        local changed = false
+
+        if visible then
+            if hidden then
+                self:SetAttribute("statehidden", nil)
+                changed = true
+            end
+            self:Show(true)
+        else
+            if not hidden then
+                self:SetAttribute("statehidden", true)
+                changed = true
+            end
+            self:Hide(true)
+        end
+
+        if not changed then
+            local token = self:GetAttribute("eab-pagesync-token") or 0
+            self:SetAttribute("eab-pagesync-token", token == 0 and 1 or 0)
+        end
+    ]]):format(NUM_ACTIONBAR_BUTTONS))
+
+    btn:SetAttributeNoHandler("_eabPageSyncInstalled", true)
+end
+
+-------------------------------------------------------------------------------
 --  Out-of-Range Icon Coloring
 --
 --  Uses the retail ACTION_RANGE_CHECK_UPDATE event to tint action button
@@ -3666,20 +3799,26 @@ local _range = {
     outOfRange = {},      -- [actionSlot] = true  (currently out of range)
     eventFrame = nil,     -- lazy-created event frame
     slotPending = false,  -- debounce for per-slot range re-enable
-    mainBarOffset = 0,    -- cached actionOffset for MainBar (updated on page change)
 }
 
 -- Resolve the action slot for a button without reading btn.action.
 -- btn.action is a protected attribute (secret value in Midnight) and
 -- reading it during combat causes taint. Instead we use a lookup table
--- populated at setup time plus a cached page offset for MainBar.
+-- populated at setup time. MainBar reads actionpage from the bar frame
+-- (set by _onstate-page) to compute the current page offset dynamically.
 local function GetButtonActionSlot(btn)
     local info = buttonToBar[btn]
     if not info then return nil end
     local offset = BAR_SLOT_OFFSETS[info.barKey]
     if not offset then return nil end
     if info.barKey == "MainBar" then
-        offset = _range.mainBarOffset
+        -- Read the current page from the bar frame's actionpage attribute,
+        -- which is set by the _onstate-page handler in the restricted env.
+        -- This correctly reflects vehicle/override/form pages, unlike
+        -- C_ActionBar.GetActionBarPage() which only tracks the manual page.
+        local frame = barFrames["MainBar"]
+        local page = frame and tonumber(frame:GetAttribute("actionpage")) or C_ActionBar.GetActionBarPage()
+        offset = (page - 1) * NUM_ACTIONBAR_BUTTONS
     end
     return offset + info.index
 end
@@ -3742,12 +3881,8 @@ function EAB:ApplyRangeColoring()
     -- Set up the event listener BEFORE enabling range checks so any
     -- immediate ACTION_RANGE_CHECK_UPDATE events are caught.
     if not _range.eventFrame then
-        -- Snapshot the current MainBar page offset so GetButtonActionSlot
-        -- returns correct slots before the first ACTIONBAR_PAGE_CHANGED fires.
-        local mainFrame = barFrames["MainBar"]
-        if mainFrame then
-            _range.mainBarOffset = mainFrame:GetAttribute("actionOffset") or 0
-        end
+        -- No offset snapshot needed: GetButtonActionSlot reads the bar
+        -- frame's actionpage attribute dynamically for MainBar.
         _range.eventFrame = CreateFrame("Frame")
         _range.eventFrame:RegisterEvent("ACTION_RANGE_CHECK_UPDATE")
         _range.eventFrame:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
@@ -3801,10 +3936,8 @@ function EAB:ApplyRangeColoring()
                     end)
                 end
             elseif event == "ACTIONBAR_PAGE_CHANGED" then
-                local mainFrame = barFrames["MainBar"]
-                if mainFrame then
-                    _range.mainBarOffset = mainFrame:GetAttribute("actionOffset") or 0
-                end
+                -- No offset update needed: GetButtonActionSlot reads the bar
+                -- frame's actionpage attribute dynamically for MainBar.
                 -- Page changed: clear all range state and re-enable for new slots
                 wipe(_range.outOfRange)
                 for _, info in ipairs(BAR_CONFIG) do
@@ -3862,6 +3995,10 @@ function EAB:ApplyRangeColoring()
                             _range.outOfRange[slot] = nil
                             ApplyRangeTint(btn, false, s)
                         end
+                    elseif slot and _range.outOfRange[slot] then
+                        -- Slot lost its action (e.g., talent swap). Clear stale tint.
+                        _range.outOfRange[slot] = nil
+                        ApplyRangeTint(btn, false, s)
                     end
                 end
             end
@@ -3906,21 +4043,103 @@ end
 -------------------------------------------------------------------------------
 --  Mouseover Fade System
 -------------------------------------------------------------------------------
-local hoverStates = {}  -- [barKey] = { frame=, buttons=, isHovered=false }
+local hoverStates = {}  -- shared by action bars, data bars, and extra bars
 local AttachExtraBarHoverHooks  -- forward declaration; defined near SetupExtraBarHolder
+
+-- Every mouseover-enabled bar follows the same state machine: entering marks
+-- the bar hovered and fades it in, leaving schedules a guarded fade-out on the
+-- next frame. The per-bar attach functions only provide the edge-case policies
+-- that differ between action bars, data bars, and Blizzard-owned extra bars.
+function EAB_VTABLE.Hover.GetSettings(barKey)
+    return EAB.db and EAB.db.profile and EAB.db.profile.bars and EAB.db.profile.bars[barKey]
+end
+
+function EAB_VTABLE.Hover.GetState(barKey, frame)
+    local state = hoverStates[barKey]
+    if not state then
+        state = { frame = frame, isHovered = false, fadeDir = nil }
+        hoverStates[barKey] = state
+    else
+        state.frame = frame or state.frame
+    end
+    return state
+end
+
+function EAB_VTABLE.Hover.FadeIn(barKey, state)
+    local s = EAB_VTABLE.Hover.GetSettings(barKey)
+    if s and s.mouseoverEnabled and state and state.fadeDir ~= "in" then
+        state.fadeDir = "in"
+        StopFade(state.frame)
+        FadeTo(state.frame, 1, s.mouseoverSpeed or 0.15)
+        if barKey == "MainBar" then SyncPagingAlpha(1) end
+    end
+end
+
+function EAB_VTABLE.Hover.FadeOut(barKey, state)
+    local s = EAB_VTABLE.Hover.GetSettings(barKey)
+    if s and s.mouseoverEnabled and state and state.fadeDir ~= "out" then
+        state.fadeDir = "out"
+        StopFade(state.frame)
+        FadeTo(state.frame, 0, s.mouseoverSpeed or 0.15)
+        if barKey == "MainBar" then SyncPagingAlpha(0) end
+    end
+end
+
+function EAB_VTABLE.Hover.ScheduleFadeOut(barKey, state, opts)
+    opts = opts or {}
+
+    C_Timer_After(0.1, function()
+        if opts.isStillHovered and opts.isStillHovered(state) then
+            if opts.markHoveredWhileActive then
+                state.isHovered = true
+            end
+            return
+        end
+        if state.isHovered then return end
+        if _quickKeybindState.open then return end
+        if opts.blockFadeOut and opts.blockFadeOut(state) then return end
+        EAB_VTABLE.Hover.FadeOut(barKey, state)
+    end)
+end
+
+function EAB_VTABLE.Hover.BuildHandlers(barKey, state, opts)
+    opts = opts or {}
+
+    local function OnEnter(self)
+        if opts.canEnter and not opts.canEnter(self, state) then return end
+        state.isHovered = true
+        EAB_VTABLE.Hover.FadeIn(barKey, state)
+    end
+
+    local function OnLeave()
+        state.isHovered = false
+        EAB_VTABLE.Hover.ScheduleFadeOut(barKey, state, opts)
+    end
+
+    return OnEnter, OnLeave
+end
+
+local function AttachDataBarHoverHooks(barKey)
+    if hoverStates[barKey] then return end
+
+    local frame = dataBarFrames[barKey]
+    if not frame then return end
+
+    local state = EAB_VTABLE.Hover.GetState(barKey, frame)
+    local OnEnter, OnLeave = EAB_VTABLE.Hover.BuildHandlers(barKey, state)
+
+    frame:HookScript("OnEnter", OnEnter)
+    frame:HookScript("OnLeave", OnLeave)
+end
 
 local function AttachHoverHooks(barKey)
     local frame = barFrames[barKey]
     local buttons = barButtons[barKey]
     if not frame or not buttons then return end
 
-    local state = hoverStates[barKey]
-    if not state then
-        state = { frame = frame, buttons = buttons, isHovered = false, fadeDir = nil }
-        hoverStates[barKey] = state
-    end
+    local state = EAB_VTABLE.Hover.GetState(barKey, frame)
 
-    local function OnEnter(self)
+    local function CanEnter(self)
         -- Skip hidden empty buttons (alwaysShowButtons off)
         local s = EAB.db.profile.bars[barKey]
         if s then
@@ -3930,7 +4149,7 @@ local function AttachHoverHooks(barKey)
                 if self ~= frame then
                     -- Individual button: skip if it's hidden (no action)
                     if self.GetAlpha and self:GetAlpha() < 0.01 then
-                        return
+                        return false
                     end
                 else
                     -- Bar frame itself (gaps between buttons): only allow if
@@ -3952,51 +4171,20 @@ local function AttachHoverHooks(barKey)
                             end
                         end
                     end
-                    if not nearVisible then return end
+                    if not nearVisible then return false end
                 end
             end
         end
-        state.isHovered = true
-        if s and s.mouseoverEnabled and state.fadeDir ~= "in" then
-            state.fadeDir = "in"
-            StopFade(frame)
-            FadeTo(frame, 1, s.mouseoverSpeed or 0.15)
-            if barKey == "MainBar" then SyncPagingAlpha(1) end
-        end
+        return true
     end
 
-    local function OnLeave()
-        state.isHovered = false
-        C_Timer_After(0.1, function()
-            if state.isHovered then return end
-            if _quickKeybindState.open then return end
-            -- Keep bar visible while a spell flyout spawned from this bar is open
-            if GetEABFlyout():IsVisible() and GetEABFlyout():IsMouseOver() then return end
-            local s = EAB.db.profile.bars[barKey]
-            if s and s.mouseoverEnabled and state.fadeDir ~= "out" then
-                state.fadeDir = "out"
-                FadeTo(frame, 0, s.mouseoverSpeed or 0.15)
-                if barKey == "MainBar" then SyncPagingAlpha(0) end
-            end
-        end)
-    end
-
-    -- When the flyout closes, re-evaluate whether the bar should fade out
-    do
-        local flyFrame = GetEABFlyout():GetFrame()
-        if flyFrame then
-            flyFrame:HookScript("OnHide", function()
-                if _quickKeybindState.open then return end
-                if state.isHovered then return end
-                local s = EAB.db.profile.bars[barKey]
-                if s and s.mouseoverEnabled and state.fadeDir ~= "out" then
-                    state.fadeDir = "out"
-                    FadeTo(frame, 0, s.mouseoverSpeed or 0.15)
-                    if barKey == "MainBar" then SyncPagingAlpha(0) end
-                end
-            end)
-        end
-    end
+    local OnEnter, OnLeave = EAB_VTABLE.Hover.BuildHandlers(barKey, state, {
+        canEnter = CanEnter,
+        blockFadeOut = function()
+            -- Keep bar visible while a spell flyout spawned from this bar is open.
+            return GetEABFlyout():IsVisible() and GetEABFlyout():IsMouseOver()
+        end,
+    })
 
     frame:HookScript("OnEnter", OnEnter)
     frame:HookScript("OnLeave", OnLeave)
@@ -4013,32 +4201,36 @@ function EAB:RefreshMouseover()
     for _, info in ipairs(ALL_BARS) do
         local key = info.key
         local s = self.db.profile.bars[key]
-        if not s then break end
-        local frame = barFrames[key] or (info.isDataBar and dataBarFrames[key]) or (info.isBlizzardMovable and blizzMovableHolders[key]) or (extraBarHolders[key]) or (info.visibilityOnly and _G[info.frameName])
-        if frame then
-            -- For extra bars (MicroBar, BagBar), fade the Blizzard frame directly
-            -- since that's what AttachExtraBarHoverHooks targets.
-            if info.visibilityOnly and not info.isDataBar and not info.isBlizzardMovable then
-                local blizzFrame = _G[info.frameName]
-                if blizzFrame then frame = blizzFrame end
-            end
-            if s.mouseoverEnabled then
-                -- Ensure extra bars have hover hooks attached (may not have been
-                -- set up at load time if mouseover was disabled then)
+        if s then
+            local frame = barFrames[key] or (info.isDataBar and dataBarFrames[key]) or (info.isBlizzardMovable and blizzMovableHolders[key]) or (extraBarHolders[key]) or (info.visibilityOnly and _G[info.frameName])
+            if frame then
+                -- For extra bars (MicroBar, BagBar), fade the Blizzard frame directly
+                -- since that's what AttachExtraBarHoverHooks targets.
                 if info.visibilityOnly and not info.isDataBar and not info.isBlizzardMovable then
-                    AttachExtraBarHoverHooks(info)
+                    local blizzFrame = _G[info.frameName]
+                    if blizzFrame then frame = blizzFrame end
                 end
-                StopFade(frame)
-                frame:SetAlpha(0)
-                local state = hoverStates[key]
-                if state then state.fadeDir = "out" end
-                if key == "MainBar" then SyncPagingAlpha(0) end
-            else
-                StopFade(frame)
-                frame:SetAlpha(s.mouseoverAlpha or 1)
-                local state = hoverStates[key]
-                if state then state.fadeDir = nil end
-                if key == "MainBar" then SyncPagingAlpha(s.mouseoverAlpha or 1) end
+                if s.mouseoverEnabled then
+                    if info.isDataBar then
+                        AttachDataBarHoverHooks(key)
+                    end
+                    -- Ensure extra bars have hover hooks attached (may not have been
+                    -- set up at load time if mouseover was disabled then)
+                    if info.visibilityOnly and not info.isDataBar and not info.isBlizzardMovable then
+                        AttachExtraBarHoverHooks(info)
+                    end
+                    StopFade(frame)
+                    frame:SetAlpha(0)
+                    local state = hoverStates[key]
+                    if state then state.fadeDir = "out" end
+                    if key == "MainBar" then SyncPagingAlpha(0) end
+                else
+                    StopFade(frame)
+                    frame:SetAlpha(s.mouseoverAlpha or 1)
+                    local state = hoverStates[key]
+                    if state then state.fadeDir = nil end
+                    if key == "MainBar" then SyncPagingAlpha(s.mouseoverAlpha or 1) end
+                end
             end
         end
     end
@@ -4119,6 +4311,171 @@ local function BuildVisibilityString(info, s)
 end
 
 -------------------------------------------------------------------------------
+--  Managed Non-Secure Visibility
+--  XP/Rep bars and extra bars such as Micro/Bag/QueueStatus are not secure
+--  bar headers, so they need an explicit runtime visibility pass whenever the
+--  player's combat/group/target/mount state changes.
+-------------------------------------------------------------------------------
+function EAB_VTABLE.ExtraBars.IsManagedNonSecureBar(info)
+    return info and (info.isDataBar or (info.visibilityOnly and not info.isBlizzardMovable))
+end
+
+function EAB_VTABLE.ExtraBars.GetManagedNonSecureFrame(info)
+    if not EAB_VTABLE.ExtraBars.IsManagedNonSecureBar(info) then return nil end
+    if info.isDataBar then
+        return dataBarFrames[info.key]
+    end
+    return info.frameName and _G[info.frameName] or nil
+end
+
+function EAB_VTABLE.ExtraBars.GetManagedNonSecureVisibilityState()
+    local inCombat = EAB_VTABLE.ExtraBars._managedNonSecureInCombat
+    if inCombat == nil then
+        inCombat = InCombatLockdown()
+    end
+    local inRaid = IsInRaid and IsInRaid() or false
+    local inGroup = IsInGroup and IsInGroup() or false
+    return {
+        inCombat = inCombat,
+        inRaid = inRaid,
+        inParty = inGroup and not inRaid,
+    }
+end
+
+function EAB_VTABLE.ExtraBars.ShouldShowManagedNonSecureBar(s)
+    if not s then return false end
+    local vis = EAB.VisibilityCompat.Normalize(s)
+    if C_PetBattles and C_PetBattles.IsInBattle and C_PetBattles.IsInBattle() then
+        return false
+    end
+    if s.enabled == false or s.alwaysHidden then return false end
+    if EllesmereUI and EllesmereUI.CheckVisibilityOptions and EllesmereUI.CheckVisibilityOptions(s) then
+        return false
+    end
+    if EllesmereUI and EllesmereUI.CheckVisibilityMode then
+        return EllesmereUI.CheckVisibilityMode(
+            vis,
+            EAB_VTABLE.ExtraBars.GetManagedNonSecureVisibilityState()
+        )
+    end
+    return vis ~= "never"
+end
+
+function EAB_VTABLE.ExtraBars.SetManagedBlizzOwnedSuppressed(frame, reason, suppressed)
+    if not frame then return end
+
+    local suppressKey = (reason == "petbattle") and "_eabSuppressedByPetBattle" or "_eabSuppressedByVisibility"
+    local shownKey = (reason == "petbattle") and "_eabWasShownBeforePetBattle" or "_eabWasShownBeforeVisibility"
+
+    if suppressed then
+        if not frame[suppressKey] then
+            frame[shownKey] = frame:IsShown()
+        end
+        frame[suppressKey] = true
+        frame:Hide()
+        return
+    end
+
+    if frame[suppressKey] then
+        local wasShown = frame[shownKey]
+        frame[suppressKey] = nil
+        frame[shownKey] = nil
+        if wasShown then
+            frame:Show()
+        end
+    end
+end
+
+function EAB_VTABLE.ExtraBars.ApplyManagedNonSecureAlpha(info, frame, s)
+    if not frame or not s or not frame:IsShown() then return end
+
+    local hstate = hoverStates[info.key]
+    if s.mouseoverEnabled then
+        if hstate and hstate.isHovered then
+            frame:SetAlpha(1)
+            hstate.fadeDir = "in"
+        else
+            frame:SetAlpha(0)
+            if hstate then hstate.fadeDir = "out" end
+        end
+    else
+        frame:SetAlpha(s.mouseoverAlpha or 1)
+        if hstate then hstate.fadeDir = nil end
+    end
+end
+
+function EAB_VTABLE.ExtraBars.ApplyManagedMouse(frame, blizzOwnedVisibility, s, shouldShow)
+    if not frame or not s then return end
+
+    shouldShow = (shouldShow ~= false)
+    -- Blizzard-owned frames (QueueStatusButton) manage their own mouse
+    -- state; overriding it disables clicking/hovering after every
+    -- visibility refresh.
+    if blizzOwnedVisibility then
+        return
+    elseif s.mouseoverEnabled and s.clickThrough then
+        SafeEnableMouseMotionOnly(frame, shouldShow)
+    else
+        SafeEnableMouse(frame, shouldShow and not s.clickThrough)
+    end
+end
+
+function EAB_VTABLE.ExtraBars.ApplyManagedNonSecurePresentation(info, frame, s, shouldShow, allowShow)
+    if not frame or not s then return end
+
+    -- Show/hide the holder BEFORE the Blizzard frame so the parent has
+    -- valid screen coordinates when the child's Show() triggers Blizzard
+    -- Layout callbacks that call GetCenter().
+    if not info.isDataBar then
+        local holder = extraBarHolders[info.key]
+        if holder then
+            if shouldShow then holder:Show() else holder:Hide() end
+        end
+    end
+
+    if info.blizzOwnedVisibility then
+        EAB_VTABLE.ExtraBars.SetManagedBlizzOwnedSuppressed(frame, "visibility", not shouldShow)
+    elseif shouldShow then
+        if allowShow ~= false then
+            frame:Show()
+        end
+    else
+        frame:Hide()
+    end
+
+    if shouldShow then
+        EAB_VTABLE.ExtraBars.ApplyManagedNonSecureAlpha(info, frame, s)
+    end
+    EAB_VTABLE.ExtraBars.ApplyManagedMouse(frame, info.blizzOwnedVisibility, s, shouldShow)
+end
+
+function EAB_VTABLE.ExtraBars.ApplyManagedNonSecureVisibility(info)
+    if not EAB_VTABLE.ExtraBars.IsManagedNonSecureBar(info) then return false, nil, nil end
+
+    local s = EAB.db and EAB.db.profile and EAB.db.profile.bars and EAB.db.profile.bars[info.key]
+    local frame = EAB_VTABLE.ExtraBars.GetManagedNonSecureFrame(info)
+    if not s or not frame then return false, frame, s end
+
+    local shouldShow = EAB_VTABLE.ExtraBars.ShouldShowManagedNonSecureBar(s)
+
+    if shouldShow and info.isDataBar and frame._updateFunc then
+        frame._updateFunc()
+    else
+        EAB_VTABLE.ExtraBars.ApplyManagedNonSecurePresentation(info, frame, s, shouldShow, not info.isDataBar)
+    end
+
+    return shouldShow, frame, s
+end
+
+function EAB_VTABLE.ExtraBars.RefreshManagedNonSecureVisibility()
+    for _, info in ipairs(EXTRA_BARS) do
+        if EAB_VTABLE.ExtraBars.IsManagedNonSecureBar(info) then
+            EAB_VTABLE.ExtraBars.ApplyManagedNonSecureVisibility(info)
+        end
+    end
+end
+
+-------------------------------------------------------------------------------
 --  Extra Bar Visibility (Pet Battle / Vehicle Hiding)
 --  MicroBar, BagBar, data bars, and Blizzard movable frames are not
 --  SecureHandlerStateTemplate frames, so we use a single secure proxy
@@ -4141,8 +4498,8 @@ function EAB:ApplyExtraBarVisibility()
                 local s = EAB.db and EAB.db.profile.bars[key]
                 if s and not s.alwaysHidden then
                     local frame
-                    if info.isDataBar then
-                        frame = dataBarFrames[key]
+                    if EAB_VTABLE.ExtraBars.IsManagedNonSecureBar(info) then
+                        frame = EAB_VTABLE.ExtraBars.GetManagedNonSecureFrame(info)
                     elseif info.isBlizzardMovable then
                         frame = blizzMovableHolders[key]
                     else
@@ -4151,35 +4508,18 @@ function EAB:ApplyExtraBarVisibility()
                     if frame then
                         if shouldHide then
                             if info.blizzOwnedVisibility then
-                                frame._eabWasShownBeforePetBattle = frame:IsShown()
+                                EAB_VTABLE.ExtraBars.SetManagedBlizzOwnedSuppressed(frame, "petbattle", true)
+                            else
+                                frame:Hide()
                             end
-                            frame:Hide()
                         else
                             if info.blizzOwnedVisibility then
-                                if frame._eabWasShownBeforePetBattle then
-                                    frame:Show()
-                                end
-                                frame._eabWasShownBeforePetBattle = nil
+                                EAB_VTABLE.ExtraBars.SetManagedBlizzOwnedSuppressed(frame, "petbattle", false)
+                            end
+                            if EAB_VTABLE.ExtraBars.IsManagedNonSecureBar(info) then
+                                EAB_VTABLE.ExtraBars.ApplyManagedNonSecureVisibility(info)
                             else
                                 frame:Show()
-                            end
-                            -- Restore correct alpha: mouseover bars fade to 0 when not hovered,
-                            -- so Show() alone leaves them invisible after a pet battle ends.
-                            if s.mouseoverEnabled then
-                                local hstate = hoverStates[key]
-                                local isHovered = hstate and hstate.isHovered
-                                if not isHovered then
-                                    frame:SetAlpha(0)
-                                else
-                                    frame:SetAlpha(s.mouseoverAlpha or 1)
-                                end
-                            else
-                                frame:SetAlpha(s.mouseoverAlpha or 1)
-                            end
-                            -- Data bars may need to re-evaluate (XP at max, etc.)
-                            if info.isDataBar then
-                                local df = dataBarFrames[key]
-                                if df and df._updateFunc then df._updateFunc() end
                             end
                         end
                     end
@@ -4191,21 +4531,21 @@ function EAB:ApplyExtraBarVisibility()
     RegisterStateDriver(_extraBarVisProxy, "extravis", "[petbattle] hide; show")
 end
 
--------------------------------------------------------------------------------
---  Combat Show/Hide, Always Hidden, Click-Through, Housing
+--  Combat Show/Hide, Runtime Visibility, Click-Through, Housing
 -------------------------------------------------------------------------------
 function EAB:ApplyCombatVisibility()
     if InCombatLockdown() then return end
     for _, info in ipairs(ALL_BARS) do
         local key = info.key
         local s = self.db.profile.bars[key]
-        if not s then break end
-        local frame = barFrames[key] or (info.isDataBar and dataBarFrames[key]) or (info.isBlizzardMovable and blizzMovableHolders[key]) or (extraBarHolders[key]) or (info.visibilityOnly and _G[info.frameName])
-        if frame and not info.visibilityOnly then
-            if s.alwaysHidden then
-                RegisterAttributeDriver(frame, "state-visibility", "hide")
-            else
-                RegisterAttributeDriver(frame, "state-visibility", BuildVisibilityString(info, s))
+        if s then
+            local frame = barFrames[key] or (info.isDataBar and dataBarFrames[key]) or (info.isBlizzardMovable and blizzMovableHolders[key]) or (extraBarHolders[key]) or (info.visibilityOnly and _G[info.frameName])
+            if frame and not info.visibilityOnly then
+                if s.alwaysHidden then
+                    RegisterAttributeDriver(frame, "state-visibility", "hide")
+                else
+                    RegisterAttributeDriver(frame, "state-visibility", BuildVisibilityString(info, s))
+                end
             end
         end
     end
@@ -4215,11 +4555,14 @@ function EAB:ApplyCombatVisibility()
     self:ApplyExtraBarVisibility()
 end
 
-function EAB:ApplyAlwaysHidden()
+function EAB:RefreshRuntimeVisibility()
     for _, info in ipairs(ALL_BARS) do
         local key = info.key
         local s = self.db.profile.bars[key]
-        if not s then break end
+        if not s then -- skip bars without settings (not yet initialized)
+        elseif EAB_VTABLE.ExtraBars.IsManagedNonSecureBar(info) then
+            EAB_VTABLE.ExtraBars.ApplyManagedNonSecureVisibility(info)
+        else
         local frame = barFrames[key] or (info.isDataBar and dataBarFrames[key]) or (info.isBlizzardMovable and blizzMovableHolders[key]) or (extraBarHolders[key]) or (info.visibilityOnly and _G[info.frameName])
         if frame then
             local vis = s.barVisibility or "always"
@@ -4271,6 +4614,7 @@ function EAB:ApplyAlwaysHidden()
                 end
             end
         end
+        end
     end
 end
 
@@ -4287,7 +4631,7 @@ function EAB:ApplyClickThroughForBar(barKey)
     -- Data bars
     local dataFrame = dataBarFrames[barKey]
     if dataFrame then
-        SafeEnableMouse(dataFrame, not s.clickThrough)
+        EAB_VTABLE.ExtraBars.ApplyManagedMouse(dataFrame, false, s, dataFrame:IsShown())
         return
     end
 
@@ -4378,7 +4722,10 @@ function EAB:UpdateHousingVisibility()
             local key = info.key
             local s = self.db.profile.bars[key]
             if s then
-                local frame = barFrames[key] or (info.isDataBar and dataBarFrames[key]) or (info.isBlizzardMovable and blizzMovableHolders[key]) or (extraBarHolders[key]) or (info.visibilityOnly and _G[info.frameName])
+                if EAB_VTABLE.ExtraBars.IsManagedNonSecureBar(info) then
+                    EAB_VTABLE.ExtraBars.ApplyManagedNonSecureVisibility(info)
+                else
+                    local frame = barFrames[key] or (info.isDataBar and dataBarFrames[key]) or (info.isBlizzardMovable and blizzMovableHolders[key]) or (extraBarHolders[key]) or (info.visibilityOnly and _G[info.frameName])
                 if frame then
                     -- Secure action bar frames use the state driver for
                     -- target/enemy options; mounted-like druid forms are
@@ -4416,6 +4763,7 @@ function EAB:UpdateHousingVisibility()
                             frame._updateFunc()
                         end
                     end
+                end
                 end
             end
         end
@@ -4993,6 +5341,44 @@ local function HookButtonCooldownEdge(btn)
     end
 end
 
+EAB_VTABLE.CooldownFonts.pending = {}
+EAB_VTABLE.CooldownFonts.timerScheduled = false
+
+function EAB_VTABLE.CooldownFonts.FlushPatch()
+    EAB_VTABLE.CooldownFonts.timerScheduled = false
+
+    for btn in pairs(EAB_VTABLE.CooldownFonts.pending) do
+        local info = buttonToBar[btn]
+        local barKey = info and info.barKey
+        local s = barKey and EAB.db and EAB.db.profile and EAB.db.profile.bars and EAB.db.profile.bars[barKey]
+        if s then
+            local fontPath, cdSize, cdOX, cdOY, cdColor = EAB_VTABLE.CooldownFonts.GetSettings(s)
+            EAB_VTABLE.CooldownFonts.ApplyToButton(btn, fontPath, cdSize, cdOX, cdOY, cdColor)
+        end
+        EAB_VTABLE.CooldownFonts.pending[btn] = nil
+    end
+end
+
+function EAB_VTABLE.CooldownFonts.HookButton(btn)
+    if not btn or btn._eabCDFontsHooked then return end
+    btn._eabCDFontsHooked = true
+
+    local function OnSetCooldown()
+        EAB_VTABLE.CooldownFonts.pending[btn] = true
+        if not EAB_VTABLE.CooldownFonts.timerScheduled then
+            EAB_VTABLE.CooldownFonts.timerScheduled = true
+            C_Timer_After(0, EAB_VTABLE.CooldownFonts.FlushPatch)
+        end
+    end
+
+    if btn.cooldown and btn.cooldown.SetCooldown then
+        hooksecurefunc(btn.cooldown, "SetCooldown", OnSetCooldown)
+    end
+    if btn.chargeCooldown and btn.chargeCooldown.SetCooldown then
+        hooksecurefunc(btn.chargeCooldown, "SetCooldown", OnSetCooldown)
+    end
+end
+
 local function HookCooldownEdge()
     if _cdEdge.hooked then return end
     _cdEdge.hooked = true
@@ -5022,6 +5408,20 @@ function EAB:ApplyCooldownEdge()
                 local btn = buttons[i]
                 if btn and btn._eabSquared then
                     ApplyButtonCooldownEdge(btn, sz, cr, cg, cb, ca)
+                end
+            end
+        end
+    end
+end
+
+function EAB_VTABLE.CooldownFonts.HookAll()
+    for _, info in ipairs(BAR_CONFIG) do
+        local buttons = barButtons[info.key]
+        if buttons then
+            for i = 1, #buttons do
+                local btn = buttons[i]
+                if btn then
+                    EAB_VTABLE.CooldownFonts.HookButton(btn)
                 end
             end
         end
@@ -5086,108 +5486,18 @@ end
 
 -------------------------------------------------------------------------------
 --  Keybind System
---  Binds keys to our buttons. On MainBar, bindings are ACTIONBUTTON1-12.
---  On other bars, we use the standard MULTIACTIONBAR bindings.
+--  Action bars 1-8 use Blizzard's native keyboard dispatch:
+--    - MainBar: ActionButtonDown/Up → GetActionButtonForID → _G["ActionButton"..id]
+--    - Bars 2-8: MultiActionButtonDown/Up → _G[barName].actionButtons[id]
+--  Both paths call TryUseActionButton which passes isKeyPress=true to UseAction,
+--  enabling press-and-hold casting and empowered spell stage charging.
 --
---  Each button gets a hidden SecureActionButtonTemplate child ("bind button")
---  that receives keybind presses and mirrors the parent's action.
---
---  Cast-on-key-down (ActionButtonUseKeyDown CVar):
---    When ON:  keys are bound with "HOTKEY" click type. A WrapScript in the
---              secure env translates HOTKEY -> LeftButton on key-down.
---              typerelease="actionrelease" is set so hold-to-cast works.
---    When OFF: keys are bound with "LeftButton" click type. The bind button
---              fires normally on key-up. No HOTKEY translation occurs.
---              Zero overhead vs. not having the bind button at all.
+--  Stance and pet bars use override bindings directly to their buttons.
 -------------------------------------------------------------------------------
 local _bindState = { vehicleCleared = false, housingCleared = false }
 
--- Secure controller used to WrapScript bind buttons in the secure environment.
-local _bindController = CreateFrame("Frame", nil, nil, "SecureHandlerAttributeTemplate")
-
--- Returns true if the cast-on-key-down CVar is currently enabled.
-local function IsKeyDownEnabled()
-    return GetCVar("ActionButtonUseKeyDown") == "1"
-end
-
-GetOrCreateBindButton = function(btn)
-    if btn._bindBtn then return btn._bindBtn end
-    -- Bind buttons must be created out of combat. If called in combat
-    -- (should not happen after eager creation in SetupBar), bail out.
-    if InCombatLockdown() then return nil end
-
-    local bind = CreateFrame("Button", btn:GetName() .. "_EABBind", btn, "SecureActionButtonTemplate")
-    bind:SetAttributeNoHandler("type", "action")
-    bind:SetAttributeNoHandler("useparent-action", true)
-    bind:SetAttributeNoHandler("useparent-checkfocuscast", true)
-    bind:SetAttributeNoHandler("useparent-checkmouseovercast", true)
-    bind:SetAttributeNoHandler("useparent-checkselfcast", true)
-    bind:SetAttributeNoHandler("useparent-flyoutDirection", true)
-    bind:SetAttributeNoHandler("useparent-pressAndHoldAction", true)
-    bind:SetAttributeNoHandler("useparent-unit", true)
-    -- Mirror the parent's binding action so QuickKeybind can resolve it
-    local parentBinding = btn:GetAttribute("binding")
-    if parentBinding then
-        bind:SetAttributeNoHandler("binding", parentBinding)
-    end
-    bind:SetSize(1, 1)
-    bind:EnableMouseWheel(true)
-    bind:RegisterForClicks("AnyUp", "AnyDown")
-
-    -- Register with our custom flyout system (intercepts flyout clicks
-    -- in the secure env so they never reach Blizzard's taint-prone path).
-    -- Stance and pet bar buttons never have flyout actions, and the
-    -- flyout WrapScript calls GetActionInfo which requires an "action"
-    -- attribute that these buttons lack.  Skip registration for them.
-    if not btn._skipFlyout then
-        GetEABFlyout():RegisterButton(bind, btn)
-    end
-
-    -- Translate HOTKEY virtual click into LeftButton inside the secure env.
-    -- Only active when keys are bound with "HOTKEY" click type (key-down mode).
-    -- When key-down is off, keys are bound as "LeftButton" so this never fires.
-    -- For flyout actions, translate to LeftButton so the flyout WrapScript
-    -- (registered earlier in the chain) can intercept and open the flyout.
-    _bindController:WrapScript(bind, "OnClick", [[
-        if button == "HOTKEY" then
-            return "LeftButton"
-        end
-    ]])
-
-    -- Visual feedback: push/release the parent button on key down/up.
-    -- Safe for both key-down and key-up modes.
-    bind:SetScript("PreClick", function(self, _, down)
-        local owner = self:GetParent()
-        if down then
-            if owner:GetButtonState() == "NORMAL" then
-                owner:SetButtonState("PUSHED")
-            end
-        else
-            if owner:GetButtonState() == "PUSHED" then
-                owner:SetButtonState("NORMAL")
-            end
-        end
-    end)
-
-    btn._bindBtn = bind
-    return bind
-end
-
--- Applies the correct typerelease to a bind button based on whether
--- cast-on-key-down is currently enabled. Called out of combat only.
-local function ApplyBindButtonMode(bind, keyDownEnabled)
-    if keyDownEnabled then
-        -- Key-down mode: typerelease="actionrelease" enables hold-to-cast.
-        bind:SetAttributeNoHandler("typerelease", "actionrelease")
-    else
-        -- Key-up mode: no typerelease needed.
-        bind:SetAttributeNoHandler("typerelease", nil)
-    end
-end
-
 local function UpdateKeybinds()
     if InCombatLockdown() then return end
-    local keyDown = IsKeyDownEnabled()
     for _, info in ipairs(BAR_CONFIG) do
         local prefix = BINDING_MAP[info.key]
         local btns = barButtons[info.key]
@@ -5208,21 +5518,8 @@ local function UpdateKeybinds()
                         if k2 then
                             SetOverrideBindingClick(btn, false, k2, btn:GetName(), "LeftButton")
                         end
-                    else
-                        local bind = GetOrCreateBindButton(btn)
-                        if bind then
-                            ApplyBindButtonMode(bind, keyDown)
-                            ClearOverrideBindings(bind)
-                            local cmd = prefix .. i
-                            local k1, k2 = GetBindingKey(cmd)
-                            if k1 then
-                                SetOverrideBindingClick(bind, false, k1, bind:GetName(), "HOTKEY")
-                            end
-                            if k2 then
-                                SetOverrideBindingClick(bind, false, k2, bind:GetName(), "HOTKEY")
-                            end
-                        end
                     end
+                    -- Action bars 1-8 use native bindings: no override needed.
                 end
             end
         end
@@ -5230,16 +5527,20 @@ local function UpdateKeybinds()
 end
 
 -- Called when ActionButtonUseKeyDown CVar changes. Defers to out-of-combat.
+local _keyDownDeferFrame
 local function ApplyKeyDownCVar()
     if InCombatLockdown() then
-        -- Can't rebind in combat; defer until combat ends.
-        local f = CreateFrame("Frame")
-        f:RegisterEvent("PLAYER_REGEN_ENABLED")
-        f:SetScript("OnEvent", function(self)
-            self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-            self:SetScript("OnEvent", nil)
-            UpdateKeybinds()
-        end)
+        -- Can't rebind in combat; defer until combat ends. Reuse a single
+        -- frame so repeated CVAR_UPDATE events during combat don't accumulate
+        -- orphaned listeners.
+        if not _keyDownDeferFrame then
+            _keyDownDeferFrame = CreateFrame("Frame")
+            _keyDownDeferFrame:SetScript("OnEvent", function(self)
+                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
+                UpdateKeybinds()
+            end)
+        end
+        _keyDownDeferFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
         return
     end
     UpdateKeybinds()
@@ -5254,16 +5555,14 @@ local function ClearKeybindsForVehicle()
     if _bindState.vehicleCleared then return end
     _bindState.vehicleCleared = true
     if InCombatLockdown() then return end
+    -- Only stance/pet bars use override bindings; action bars 1-8 use
+    -- native bindings that Blizzard manages during vehicle/override.
     for _, info in ipairs(BAR_CONFIG) do
-        local btns = barButtons[info.key]
-        if btns then
-            for _, btn in ipairs(btns) do
-                if btn then
-                    if info.isStance or info.isPetBar then
-                        ClearOverrideBindings(btn)
-                    elseif btn._bindBtn then
-                        ClearOverrideBindings(btn._bindBtn)
-                    end
+        if info.isStance or info.isPetBar then
+            local btns = barButtons[info.key]
+            if btns then
+                for _, btn in ipairs(btns) do
+                    if btn then ClearOverrideBindings(btn) end
                 end
             end
         end
@@ -5357,7 +5656,7 @@ do
             local anchor = bar1 or UIParent
             if parent ~= anchor and parent ~= UIParent then
                 hookGuard = true
-                EAB.AnchorVehicleButton()
+                pcall(EAB.AnchorVehicleButton)
                 hookGuard = false
             end
         end)
@@ -5390,15 +5689,11 @@ if IsHouseEditorActive then
             _bindState.housingCleared = true
             if not InCombatLockdown() then
                 for _, info in ipairs(BAR_CONFIG) do
-                    local btns = barButtons[info.key]
-                    if btns then
-                        for _, btn in ipairs(btns) do
-                            if btn then
-                                if info.isStance or info.isPetBar then
-                                    ClearOverrideBindings(btn)
-                                elseif btn._bindBtn then
-                                    ClearOverrideBindings(btn._bindBtn)
-                                end
+                    if info.isStance or info.isPetBar then
+                        local btns = barButtons[info.key]
+                        if btns then
+                            for _, btn in ipairs(btns) do
+                                if btn then ClearOverrideBindings(btn) end
                             end
                         end
                     end
@@ -5494,6 +5789,10 @@ local function ApplyAll()
 
     local inCombat = InCombatLockdown()
 
+    if not inCombat then
+        EAB_VTABLE.MainBarPageSync.InstallAll()
+    end
+
     for _, info in ipairs(BAR_CONFIG) do
         local key = info.key
         local s = EAB.db.profile.bars[key]
@@ -5524,7 +5823,7 @@ local function ApplyAll()
     EAB:ApplyCooldownEdge()
     EAB:ApplyMiscTextures()
     if not inCombat then EAB:ApplyCombatVisibility() end
-    if not inCombat then EAB:ApplyAlwaysHidden() end
+    if not inCombat then EAB:RefreshRuntimeVisibility() end
     EAB:RefreshMouseover()
     EAB:RefreshProcGlows()
     EAB:ApplyRangeColoring()
@@ -5907,14 +6206,13 @@ function EAB:OnFirstLogin()
             -- options dropdown reflects the actual state.
             if data.visibility then
                 if data.visibility == 3 then
-                    s.alwaysHidden = true
-                    s.barVisibility = "never"
+                    EAB.VisibilityCompat.ApplyMode(s, "never")
                 elseif data.visibility == 1 then
-                    s.combatShowEnabled = true
-                    s.barVisibility = "in_combat"
+                    EAB.VisibilityCompat.ApplyMode(s, "in_combat")
                 elseif data.visibility == 2 then
-                    s.combatHideEnabled = true
-                    s.barVisibility = "out_of_combat"
+                    EAB.VisibilityCompat.ApplyMode(s, "out_of_combat")
+                else
+                    EAB.VisibilityCompat.ApplyMode(s, "always")
                 end
             end
             if data.point then
@@ -5964,37 +6262,13 @@ function EAB:FinishSetup()
             end
             RestoreBarPositions()
             EAB.AnchorVehicleButton()
-            -- Set up MainBar paging
-            local mainFrame = barFrames["MainBar"]
-            if mainFrame then
-                local curOffset = mainFrame:GetAttribute("actionOffset") or 0
-                local mainBtns = barButtons["MainBar"]
-                if mainBtns then
-                    for i, btn in ipairs(mainBtns) do
-                        if btn then
-                            btn:SetAttribute("index", i)
-                            btn:SetAttribute("_childupdate-offset", [[
-                                local offset = message or 0
-                                local id = self:GetAttribute("index") + offset
-                                if self:GetAttribute("action") ~= id then
-                                    self:SetAttribute("action", id)
-                                end
-                            ]])
-                            btn:SetAttribute("action", i + curOffset)
-                        end
-                    end
-                end
-            end
+            -- MainBar paging: ActionButton1-12 keep their IDs and derive action
+            -- via CalculateAction path 1. The _onstate-page handler on the bar
+            -- frame sets actionpage from the restricted env for form/vehicle/override.
         else
             -- Combat reload: non-protected setup only; secure handler does the rest.
-            -- Stock bar disposal already happened at file load time.
-            -- Attribute drivers are combat-safe.
-            if ActionBarParent then
-                RegisterAttributeDriver(ActionBarParent, "state-visibility", "[vehicleui][overridebar] show; hide")
-            end
-            if OverrideActionBar then
-                RegisterAttributeDriver(OverrideActionBar, "state-visibility", "[vehicleui][overridebar] show; hide")
-            end
+            -- Stock bar disposal (including ActionBarParent) already happened at
+            -- file load time. OverrideActionBar is fully Blizzard-owned.
             C_CVar.SetCVar("SHOW_MULTI_ACTIONBAR_1", "1")
             C_CVar.SetCVar("SHOW_MULTI_ACTIONBAR_2", "1")
             C_CVar.SetCVar("SHOW_MULTI_ACTIONBAR_3", "1")
@@ -6032,7 +6306,6 @@ function EAB:FinishSetup()
                             local actionSlot = 0
                             if key == "MainBar" then
                                 -- For MainBar, actionSlot encodes the button index (1-12)
-                                -- so the secure snippet can set up _childupdate-offset paging
                                 actionSlot = i
                             elseif info.isPetBar then
                                 -- PetActionButtons use their index (1-10) as their slot ID
@@ -6046,6 +6319,9 @@ function EAB:FinishSetup()
                                 w = btnData.w, h = btnData.h,
                                 show = btnData.show,
                                 actionSlot = actionSlot,
+                                -- nativePage > 0: native-dispatch bar with fixed actionpage
+                                -- nativePage = -1: MainBar (native dispatch, no fixed page)
+                                nativePage = info.nativeActionPage or (info.nativeMainBar and -1) or 0,
                             }
                         end
                     end
@@ -6208,12 +6484,7 @@ function EAB:FinishSetup()
                 if _quickKeybindState.open then return end
                 for key, state in pairs(hoverStates) do
                     if not state.isHovered then
-                        local s = EAB.db.profile.bars[key]
-                        if s and s.mouseoverEnabled and state.fadeDir ~= "out" then
-                            state.fadeDir = "out"
-                            FadeTo(state.frame, 0, s.mouseoverSpeed or 0.15)
-                            if key == "MainBar" then SyncPagingAlpha(0) end
-                        end
+                        EAB_VTABLE.Hover.FadeOut(key, state)
                     end
                 end
             end)
@@ -6288,10 +6559,11 @@ function EAB:FinishSetup()
         -- Force-restore all strata and clear drag visibility without the
         -- guard check, so stale state from spec changes etc. is always cleaned.
         _dragState.visible = false
+        -- Skip the restore if in combat; the strata cache entries survive
+        -- and will be restored on the next PLAYER_REGEN_ENABLED call.
+        if InCombatLockdown() then return end
         for frame, orig in pairs(_dragState.strataCache) do
-            if not InCombatLockdown() then
-                frame:SetFrameStrata(orig)
-            end
+            frame:SetFrameStrata(orig)
         end
         wipe(_dragState.strataCache)
     end
@@ -6301,7 +6573,8 @@ function EAB:FinishSetup()
         for _, info in ipairs(ALL_BARS) do
             local key = info.key
             local s = self.db.profile.bars[key]
-            if not s then break end
+            if not s then -- skip bars without settings
+            else
             local frame = barFrames[key]
                 or (info.isDataBar and dataBarFrames[key])
                 or (info.isBlizzardMovable and blizzMovableHolders[key])
@@ -6352,6 +6625,7 @@ function EAB:FinishSetup()
                 end
             end
         end
+        end
     end
 
     self:RegisterEvent("CURSOR_CHANGED", function()
@@ -6381,13 +6655,11 @@ function EAB:FinishSetup()
         ApplyAll()
         -- Restore any strata changes that couldn't be done in combat
         ResetDragState()
-    end)
-
-    self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
+        -- Quick Keybind buttons may need reassertion after combat transitions
         _quickKeybindState.ReassertButtonsAfterCombatChange()
     end)
 
-    self:RegisterEvent("PLAYER_REGEN_ENABLED", function()
+    self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
         _quickKeybindState.ReassertButtonsAfterCombatChange()
     end)
 
@@ -6755,16 +7027,54 @@ local function CreateDataBarFrame(barKey, updateFunc)
     return holder
 end
 
+-- Data bars own their content updates, but visibility is shared with the
+-- generic non-secure visibility system above. Guard each update callback so a
+-- later XP/reputation event cannot re-show a bar that runtime conditions have
+-- already hidden (for example `solo` while grouped).
+function EAB_VTABLE.ExtraBars.BeginManagedDataBarUpdate(barKey)
+    local frame = dataBarFrames[barKey]
+    if not frame then return nil, nil end
+    local info = BAR_LOOKUP[barKey]
+    if EAB.db.profile.useBlizzardDataBars then
+        if info then
+            EAB_VTABLE.ExtraBars.ApplyManagedNonSecurePresentation(info, frame, EAB.db.profile.bars[barKey], false, true)
+        else
+            frame:Hide()
+        end
+        return nil, nil
+    end
+
+    local s = EAB.db.profile.bars[barKey]
+    if not s then return nil, nil end
+    if s.alwaysHidden or not EAB_VTABLE.ExtraBars.ShouldShowManagedNonSecureBar(s) then
+        if info then
+            EAB_VTABLE.ExtraBars.ApplyManagedNonSecurePresentation(info, frame, s, false, true)
+        else
+            frame:Hide()
+        end
+        return nil, s
+    end
+
+    return frame, s
+end
+
+function EAB_VTABLE.ExtraBars.FinishManagedDataBarUpdate(barKey, frame, s)
+    if not frame or not s then return end
+
+    local info = BAR_LOOKUP[barKey]
+    if info then
+        EAB_VTABLE.ExtraBars.ApplyManagedNonSecurePresentation(info, frame, s, true, true)
+    else
+        frame:Show()
+    end
+end
+
 -------------------------------------------------------------------------------
 --  XP Bar
 -------------------------------------------------------------------------------
 local function UpdateXPBar()
-    local frame = dataBarFrames["XPBar"]
+    local frame, s = EAB_VTABLE.ExtraBars.BeginManagedDataBarUpdate("XPBar")
     if not frame then return end
-    if EAB.db.profile.useBlizzardDataBars then frame:Hide(); return end
-    local s = EAB.db.profile.bars["XPBar"]
-    if not s then return end
-    if s.alwaysHidden then frame:Hide(); return end
 
     local bar = frame._bar
     local text = frame._text
@@ -6772,11 +7082,9 @@ local function UpdateXPBar()
     -- Hide at max level (or XP disabled)
     if (IsLevelAtEffectiveMaxLevel and IsLevelAtEffectiveMaxLevel(UnitLevel("player")))
         or (IsXPUserDisabled and IsXPUserDisabled()) then
-        frame:Hide()
+        EAB_VTABLE.ExtraBars.ApplyManagedNonSecurePresentation(BAR_LOOKUP["XPBar"], frame, s, false, true)
         return
     end
-
-    frame:Show()
 
     local currentXP = UnitXP("player")
     local maxXP = UnitXPMax("player")
@@ -6806,6 +7114,8 @@ local function UpdateXPBar()
     else
         text:SetText(format("%.1f%%", pct))
     end
+
+    EAB_VTABLE.ExtraBars.FinishManagedDataBarUpdate("XPBar", frame, s)
 end
 
 local function CreateXPBar()
@@ -6868,23 +7178,17 @@ end
 --  Reputation Bar
 -------------------------------------------------------------------------------
 local function UpdateRepBar()
-    local frame = dataBarFrames["RepBar"]
+    local frame, s = EAB_VTABLE.ExtraBars.BeginManagedDataBarUpdate("RepBar")
     if not frame then return end
-    if EAB.db.profile.useBlizzardDataBars then frame:Hide(); return end
-    local s = EAB.db.profile.bars["RepBar"]
-    if not s then return end
-    if s.alwaysHidden then frame:Hide(); return end
 
     local bar = frame._bar
     local text = frame._text
 
     local data = C_Reputation and C_Reputation.GetWatchedFactionData and C_Reputation.GetWatchedFactionData()
     if not data or not data.name then
-        frame:Hide()
+        EAB_VTABLE.ExtraBars.ApplyManagedNonSecurePresentation(BAR_LOOKUP["RepBar"], frame, s, false, true)
         return
     end
-
-    frame:Show()
 
     local name = data.name
     local reaction = data.reaction or 4
@@ -6927,7 +7231,7 @@ local function UpdateRepBar()
         if majorData then
             local hasMax = C_MajorFactions.HasMaximumRenown and C_MajorFactions.HasMaximumRenown(factionID)
             if hasMax then
-                frame:Hide()
+                EAB_VTABLE.ExtraBars.ApplyManagedNonSecurePresentation(BAR_LOOKUP["RepBar"], frame, s, false, true)
                 return
             end
             reaction = 10
@@ -6947,7 +7251,7 @@ local function UpdateRepBar()
 
     -- Hide capped / maxed factions (Exalted with no paragon, max friendship, etc.)
     if nextReactionThreshold == math.huge or currentReactionThreshold == nextReactionThreshold then
-        frame:Hide()
+        EAB_VTABLE.ExtraBars.ApplyManagedNonSecurePresentation(BAR_LOOKUP["RepBar"], frame, s, false, true)
         return
     end
 
@@ -6966,6 +7270,8 @@ local function UpdateRepBar()
     if text:GetStringWidth() > barW - 4 then
         text:SetText(format("%.0f%%", pct))
     end
+
+    EAB_VTABLE.ExtraBars.FinishManagedDataBarUpdate("RepBar", frame, s)
 end
 
 local function CreateRepBar()
@@ -7085,97 +7391,89 @@ local function RegisterDataBarsWithUnlockMode()
     EllesmereUI:RegisterUnlockElements(elements)
 end
 
+function EAB_VTABLE.ExtraBars.CreateManagedDataBarFrames()
+    CreateXPBar()
+    CreateRepBar()
+end
+
+function EAB_VTABLE.ExtraBars.InitializeDataBarHoverState()
+    for _, info in ipairs(EXTRA_BARS) do
+        if info.isDataBar then
+            AttachDataBarHoverHooks(info.key)
+        end
+    end
+end
+
+function EAB_VTABLE.ExtraBars.RestoreSavedDataBarPositions()
+    local positions = EAB.db.profile.barPositions
+    if not positions then return end
+
+    for _, info in ipairs(EXTRA_BARS) do
+        if info.isDataBar then
+            local pos = positions[info.key]
+            local frame = dataBarFrames[info.key]
+            if pos and frame and pos.point then
+                frame:ClearAllPoints()
+                frame:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
+            end
+        end
+    end
+end
+
+function EAB_VTABLE.ExtraBars.RegisterDataBarsWithUnlockModeWhenReady()
+    if EllesmereUI and EllesmereUI.RegisterUnlockElements then
+        RegisterDataBarsWithUnlockMode()
+        return
+    end
+
+    C_Timer_After(1, function()
+        if EllesmereUI and EllesmereUI.RegisterUnlockElements then
+            RegisterDataBarsWithUnlockMode()
+        end
+    end)
+end
+
+function EAB_VTABLE.ExtraBars.EnsureManagedDataBarRuntimeState()
+    -- Apply the current combat/group/mouseover state now that every managed
+    -- non-secure frame exists. ApplyAll runs earlier in startup before these
+    -- holders/data bars are created.
+    EAB_VTABLE.ExtraBars._managedNonSecureInCombat = InCombatLockdown()
+    EAB_VTABLE.ExtraBars.RefreshManagedNonSecureVisibility()
+
+    if EAB_VTABLE.ExtraBars._managedDataBarCombatFrame then return end
+
+    -- Managed non-secure bars need a runtime combat refresh because secure
+    -- state drivers are not available for these frames.
+    EAB_VTABLE.ExtraBars._managedDataBarCombatFrame = CreateFrame("Frame")
+    EAB_VTABLE.ExtraBars._managedDataBarCombatFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
+    EAB_VTABLE.ExtraBars._managedDataBarCombatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+    EAB_VTABLE.ExtraBars._managedDataBarCombatFrame:SetScript("OnEvent", function(_, event)
+        -- Rely on the combat event direction here instead of sampling
+        -- `InCombatLockdown()` during the transition. That keeps the managed
+        -- non-secure bars in sync with the same edge that triggered the event.
+        EAB_VTABLE.ExtraBars._managedNonSecureInCombat = (event == "PLAYER_REGEN_DISABLED")
+        EAB_VTABLE.ExtraBars.RefreshManagedNonSecureVisibility()
+    end)
+end
+
 local function SetupDataBars()
     -- Skip creating custom bars entirely if user wants Blizzard to control them
     if EAB.db.profile.useBlizzardDataBars then return end
 
-    CreateXPBar()
-    CreateRepBar()
+    -- Phase 1: create the frames and their update callbacks.
+    EAB_VTABLE.ExtraBars.CreateManagedDataBarFrames()
 
-    -- Apply visibility settings (mouseover, combat, etc.)
-    for _, info in ipairs(EXTRA_BARS) do
-        if info.isDataBar then
-            local frame = dataBarFrames[info.key]
-            if frame then
-                local s = EAB.db.profile.bars[info.key]
-                if s then
-                    -- Apply click-through setting
-                    if s.clickThrough then
-                        SafeEnableMouse(frame, false)
-                    end
-                    if s.mouseoverEnabled then
-                        local state = { isHovered = false, fadeDir = nil }
-                        frame:HookScript("OnEnter", function()
-                            state.isHovered = true
-                            if state.fadeDir ~= "in" then
-                                state.fadeDir = "in"
-                                FadeTo(frame, 1, s.mouseoverSpeed or 0.15)
-                            end
-                        end)
-                        frame:HookScript("OnLeave", function()
-                            state.isHovered = false
-                            C_Timer_After(0.1, function()
-                                if state.isHovered then return end
-                                if _quickKeybindState.open then return end
-                                if state.fadeDir ~= "out" then
-                                    state.fadeDir = "out"
-                                    FadeTo(frame, 0, s.mouseoverSpeed or 0.15)
-                                end
-                            end)
-                        end)
-                        frame:SetAlpha(0)
-                    end
-                end
-            end
-        end
-    end
+    -- Phase 2: attach hover handling now that the holders exist.
+    EAB_VTABLE.ExtraBars.InitializeDataBarHoverState()
 
-    -- Apply saved positions
-    local positions = EAB.db.profile.barPositions
-    if positions then
-        for _, info in ipairs(EXTRA_BARS) do
-            if info.isDataBar then
-                local pos = positions[info.key]
-                local frame = dataBarFrames[info.key]
-                if pos and frame and pos.point then
-                    frame:ClearAllPoints()
-                    frame:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
-                end
-            end
-        end
-    end
+    -- Phase 3: restore saved positions onto the live holders.
+    EAB_VTABLE.ExtraBars.RestoreSavedDataBarPositions()
 
-    -- Register data bars with unlock mode (frames exist now)
-    if EllesmereUI and EllesmereUI.RegisterUnlockElements then
-        RegisterDataBarsWithUnlockMode()
-    else
-        C_Timer_After(1, function()
-            if EllesmereUI and EllesmereUI.RegisterUnlockElements then
-                RegisterDataBarsWithUnlockMode()
-            end
-        end)
-    end
+    -- Phase 4: register the frames with Unlock Mode once the shared shell is ready.
+    EAB_VTABLE.ExtraBars.RegisterDataBarsWithUnlockModeWhenReady()
 
-    -- Combat show/hide for data bars (can't use RegisterAttributeDriver on non-secure frames)
-    local combatFrame = CreateFrame("Frame")
-    combatFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
-    combatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
-    combatFrame:SetScript("OnEvent", function(_, event)
-        local inCombat = (event == "PLAYER_REGEN_DISABLED")
-        for _, info in ipairs(EXTRA_BARS) do
-            if info.isDataBar then
-                local frame = dataBarFrames[info.key]
-                local s = EAB.db.profile.bars[info.key]
-                if frame and s and not s.alwaysHidden then
-                    if s.combatShowEnabled then
-                        if inCombat then frame:Show() else frame:Hide() end
-                    elseif s.combatHideEnabled then
-                        if inCombat then frame:Hide() else frame:Show() end
-                    end
-                end
-            end
-        end
-    end)
+    -- Phase 5: apply the current runtime visibility state and keep it in sync.
+    EAB_VTABLE.ExtraBars.EnsureManagedDataBarRuntimeState()
 end
 
 -------------------------------------------------------------------------------
@@ -7531,8 +7829,7 @@ AttachExtraBarHoverHooks = function(info)
     local fadeTarget = blizzFrame
     local hoverRoot = hoverFrame or blizzFrame
 
-    local state = { isHovered = false, fadeDir = nil, frame = fadeTarget }
-    hoverStates[info.key] = state
+    local state = EAB_VTABLE.Hover.GetState(info.key, fadeTarget)
 
     local function IsChildOfHoverRoot(frame)
         while frame do
@@ -7558,32 +7855,15 @@ AttachExtraBarHoverHooks = function(info)
         return MouseIsOver(hoverRoot)
     end
 
-    local function OnEnter()
-        if not IsHoverRootActive() then return end
-        state.isHovered = true
-        local bs = EAB.db.profile.bars[info.key]
-        if bs and bs.mouseoverEnabled and state.fadeDir ~= "in" then
-            state.fadeDir = "in"
-            StopFade(fadeTarget)
-            FadeTo(fadeTarget, 1, bs.mouseoverSpeed or 0.15)
-        end
-    end
-    local function OnLeave()
-        state.isHovered = false
-        C_Timer_After(0.1, function()
-            if IsHoverRootActive() then
-                state.isHovered = true
-                return
-            end
-            if state.isHovered then return end
-            if _quickKeybindState.open then return end
-            local bs = EAB.db.profile.bars[info.key]
-            if bs and bs.mouseoverEnabled and state.fadeDir ~= "out" then
-                state.fadeDir = "out"
-                FadeTo(fadeTarget, 0, bs.mouseoverSpeed or 0.15)
-            end
-        end)
-    end
+    local OnEnter, OnLeave = EAB_VTABLE.Hover.BuildHandlers(info.key, state, {
+        canEnter = function()
+            return IsHoverRootActive()
+        end,
+        isStillHovered = function()
+            return IsHoverRootActive()
+        end,
+        markHoveredWhileActive = true,
+    })
 
     hoverRoot:HookScript("OnEnter", OnEnter)
     hoverRoot:HookScript("OnLeave", OnLeave)
@@ -8004,7 +8284,7 @@ local function EAB_UpdateQuickKeybindVisibility(show)
         end
     else
         EAB:ApplyCombatVisibility()
-        EAB:ApplyAlwaysHidden()
+        EAB:RefreshRuntimeVisibility()
         for _, info in ipairs(BAR_CONFIG) do
             EAB:ApplyAlwaysShowButtons(info.key)
             EAB:ApplyClickThroughForBar(info.key)
