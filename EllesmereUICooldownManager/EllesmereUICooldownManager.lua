@@ -3353,6 +3353,13 @@ BuildAllCDMBars = function()
         end
     end
 
+    -- Migration: "none" (No Animation) -> "hideActive" (Hide Active State)
+    for _, bd in ipairs(p.cdmBars.bars) do
+        if bd.activeStateAnim == "none" then
+            bd.activeStateAnim = "hideActive"
+        end
+    end
+
     if not p.cdmBars.enabled then
         -- Restore Blizzard CDM if we're disabled
         RestoreBlizzardCDM()
@@ -5097,8 +5104,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo, arg3)
             -- (PLAYER_ENTERING_WORLD may have bailed early because spec wasn't ready.)
             if _specValidated then
                 C_Timer.After(0.3, function()
-                    BuildAllCDMBars()
-                    if ns.QueueReanchor then ns.QueueReanchor() end
+                    ns.FullCDMRebuild("spells_changed")
                     if scheduleReconcile and RECONCILE.pending then
                         C_Timer.After(0.5, function()
                             if RECONCILE.pending then

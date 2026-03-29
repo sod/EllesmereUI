@@ -1814,6 +1814,8 @@ local function CreateBarFrame(info)
     local frame = CreateFrame("Frame", "EABBar_" .. key, UIParent, "SecureHandlerStateTemplate")
     frame:SetSize(1, 1)
     frame:SetPoint("CENTER")
+    -- Render above any Blizzard bar art that might bleed through
+    frame:SetFrameLevel(math.max(frame:GetFrameLevel(), 10))
     -- Bar frames never need to intercept mouse clicks; only buttons do.
     -- Motion is enabled later by the hover system for OnEnter/OnLeave.
     if frame.SetMouseClickEnabled then

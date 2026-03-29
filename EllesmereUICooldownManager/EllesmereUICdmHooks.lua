@@ -1229,17 +1229,12 @@ local function CollectAndReanchor()
                     icons[i] = nil
                 end
 
-                -- Twin-frame positioning disabled: SetAllPoints/SetFrameLevel
-                -- on unclaimed Blizzard frames causes taint propagation.
-                -- Spell transforms are handled by OnCooldownIDSet clearing
-                -- the stale _cdidRouteMap entry instead.
-                if not isBuff then
-                    for _, entry in ipairs(list) do
-                        local f = entry.frame
-                        if f and not usedFrames[f] then
-                            usedFrames[f] = true
-                            f:SetAlpha(0)
-                        end
+                -- Mark unclaimed frames as used so the alpha-0 cleanup
+                -- doesn't hide them. Blizzard controls twin-frame visibility
+                -- during spell transforms (e.g. Wings → Sentinel).
+                for _, entry in ipairs(list) do
+                    if entry.frame and not usedFrames[entry.frame] then
+                        usedFrames[entry.frame] = true
                     end
                 end
 
@@ -1571,15 +1566,11 @@ function ns.SetupViewerHooks()
                 fc.overrideSid = nil
                 fc.cachedCdID = nil
             end
-            local fd = hookFrameData[frame]
-            if fd then fd.decorated = nil end
-            -- Clear stale cooldownID route so next reanchor resolves fresh.
-            -- Prevents spell transforms (e.g. Thunder Clap → Thunder Blast)
-            -- from routing to the wrong bar via cached cooldownID.
-            local cdID = frame.cooldownID
-            if cdID and _cdidRouteMap[cdID] then
-                _cdidRouteMap[cdID] = nil
-            end
+            -- Don't clear fd.decorated or _cdidRouteMap here.
+            -- Decoration only needs to happen once per frame.
+            -- The cdidRouteMap entry is still valid (cooldownID doesn't
+            -- change on transforms, only the spell behind it changes).
+            -- CategorizeFrame will re-resolve the spell via baseSID.
         end
         QueueReanchor()
     end
@@ -1651,6 +1642,12 @@ function ns.SetupViewerHooks()
                     QueueReanchor()
                 end)
             end
+            -- Re-apply our icon positions immediately when Blizzard
+            -- re-layouts so frames don't flash to Blizzard positions.
+            hooksecurefunc(viewer, "Layout", function()
+                local LCB = ns.LayoutCDMBar
+                if LCB then LCB(barKey) end
+            end)
             local function SyncViewerToBar()
                 if InCombatLockdown() then return end
                 local container = cdmBarFrames[barKey]
@@ -1778,86 +1775,57 @@ function ns.SetupViewerHooks()
                                     end
                                 end
 
-                                -- Active state animation (CD/utility only, polled)
+                                -- Active state animation (CD/utility only, polled).
+                                -- Detection uses cooldownSwipeColor:
+                                -- Blizzard sets a non-zero red channel when a spell
+                                -- is active (proc, buff). No wasSetFromAura/auraInstanceID
+                                -- reads -- those are secret values that cause taint.
                                 if not isBuff and fd then
                                     local anim = bd.activeStateAnim or "blizzard"
-
-                                    -- Install hooks ONCE on first tick (outside
-                                    -- reanchor chain to avoid taint). Hooks are
-                                    -- always present so they intercept the very
-                                    -- first SetCooldown/SetDesaturated call when
-                                    -- a spell procs -- no 1-frame flash.
-                                    if not fd.hideActiveHooked and fd.cooldown then
-                                        fd.hideActiveHooked = true
-                                        hooksecurefunc(fd.cooldown, "SetCooldown", function(cd)
-                                            -- wasSetFromAura is a boolean (never a
-                                            -- secret value), safe to read in hooks.
-                                            -- This fires immediately on Blizzard's
-                                            -- SetCooldown, eliminating the 1-frame flash.
-                                            if not frame.wasSetFromAura then return end
-                                            local hfc = _ecmeFC[frame]
-                                            local hbd = hfc and hfc.barKey and barDataByKey[hfc.barKey]
-                                            local hAnim = hbd and hbd.activeStateAnim or "blizzard"
-                                            if hAnim == "hideActive" then
-                                                cd:SetReverse(false)
-                                                cd:SetSwipeColor(0, 0, 0, hbd and hbd.swipeAlpha or 0.7)
-                                                if hbd and hbd.desaturateOnCD then
-                                                    local hfd = hookFrameData[frame]
-                                                    local tex = hfd and hfd.tex
-                                                    if tex then tex:SetDesaturated(true) end
-                                                end
+                                    if anim ~= "blizzard" then
+                                        local swipeColor = frame.cooldownSwipeColor
+                                        local isActive = false
+                                        if swipeColor and type(swipeColor) ~= "number"
+                                            and swipeColor.GetRGBA then
+                                            local r = swipeColor:GetRGBA()
+                                            if r and type(r) == "number"
+                                                and not issecretvalue(r) then
+                                                isActive = (r ~= 0)
                                             end
-                                        end)
-                                        if fd.tex and fd.tex.SetDesaturated then
-                                            local _inDesatHook = false
-                                            hooksecurefunc(fd.tex, "SetDesaturated", function(self, val)
-                                                if _inDesatHook then return end
-                                                if not frame.wasSetFromAura then return end
-                                                local hfc = _ecmeFC[frame]
-                                                local hbd = hfc and hfc.barKey and barDataByKey[hfc.barKey]
-                                                if hbd and hbd.activeStateAnim == "hideActive"
-                                                    and hbd.desaturateOnCD and not val then
-                                                    _inDesatHook = true
-                                                    self:SetDesaturated(true)
-                                                    _inDesatHook = false
-                                                end
-                                            end)
                                         end
-                                    end
 
-                                    local isActive = frame.wasSetFromAura == true or frame.auraInstanceID ~= nil
-                                    if isActive then
-                                        if anim == "hideActive" and fd.cooldown then
-                                            fd.cooldown:SetReverse(false)
-                                            fd.cooldown:SetSwipeColor(0, 0, 0, bd.swipeAlpha or 0.7)
-                                        end
-                                        -- Glow start: one-time on transition
-                                        if not fd.isActive then
-                                            fd.isActive = true
-                                            if anim == "hideActive" and bd.desaturateOnCD and fd.tex then
-                                                fd.tex:SetDesaturated(true)
+                                        if anim == "hideActive" then
+                                            -- Suppress active visuals: desat + black swipe
+                                            if isActive then
+                                                if fd.cooldown then
+                                                    fd.cooldown:SetReverse(false)
+                                                    fd.cooldown:SetSwipeColor(0, 0, 0, bd.swipeAlpha or 0.7)
+                                                end
+                                                if fd.tex then fd.tex:SetDesaturated(true) end
+                                            elseif fd.isActive then
+                                                -- Transition to inactive: restore
+                                                if fd.tex then fd.tex:SetDesaturated(bd.desaturateOnCD or false) end
                                             end
+                                        else
+                                            -- Custom glow modes (1, 3, 4, 5, 7)
                                             local glowIdx = tonumber(anim)
                                             if glowIdx and fd.glowOverlay then
-                                                local cr, cg, cb = 1.0, 0.85, 0.0
-                                                if bd.activeAnimClassColor then
-                                                    local _, ct = UnitClass("player")
-                                                    if ct then local cc = RAID_CLASS_COLORS[ct]; if cc then cr, cg, cb = cc.r, cc.g, cc.b end end
-                                                elseif bd.activeAnimR then
-                                                    cr, cg, cb = bd.activeAnimR, bd.activeAnimG or 0.85, bd.activeAnimB or 0.0
+                                                if isActive and not fd.isActive then
+                                                    local cr, cg, cb = 1.0, 0.85, 0.0
+                                                    if bd.activeAnimClassColor then
+                                                        local _, ct = UnitClass("player")
+                                                        if ct then local cc = RAID_CLASS_COLORS[ct]; if cc then cr, cg, cb = cc.r, cc.g, cc.b end end
+                                                    elseif bd.activeAnimR then
+                                                        cr, cg, cb = bd.activeAnimR, bd.activeAnimG or 0.85, bd.activeAnimB or 0.0
+                                                    end
+                                                    fd.glowOverlay:SetAlpha(1)
+                                                    ns.StartNativeGlow(fd.glowOverlay, glowIdx, cr, cg, cb)
+                                                elseif not isActive and fd.isActive then
+                                                    ns.StopNativeGlow(fd.glowOverlay)
                                                 end
-                                                fd.glowOverlay:SetAlpha(1)
-                                                ns.StartNativeGlow(fd.glowOverlay, glowIdx, cr, cg, cb)
                                             end
                                         end
-                                    elseif fd.isActive then
-                                        fd.isActive = false
-                                        if anim == "hideActive" and fd.tex then
-                                            fd.tex:SetDesaturated(bd.desaturateOnCD or false)
-                                        end
-                                        if fd.glowOverlay then
-                                            ns.StopNativeGlow(fd.glowOverlay)
-                                        end
+                                        fd.isActive = isActive
                                     end
                                 end
                             end
