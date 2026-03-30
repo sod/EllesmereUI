@@ -546,6 +546,11 @@ local defaults = {
             borderSize = 1,
             borderColor = { r = 0, g = 0, b = 0 },
             highlightColor = { r = 1, g = 1, b = 1 },
+            raidMarkerEnabled = true,
+            raidMarkerSize = 28,
+            raidMarkerAlign = "left",
+            raidMarkerX = 0,
+            raidMarkerY = 0,
         },
         enabledFrames = {
             player = true,
@@ -3494,6 +3499,33 @@ local function StyleBossFrame(frame, unit)
     UpdateBordersForScale(frame, unit)
     ReparentBarsToClip(frame)
 
+    -- Raid target marker icon (boss frames) -- anchored outside the LEFT edge
+    do
+        local raidIconHolder = CreateFrame("Frame", nil, frame)
+        raidIconHolder:SetAllPoints(frame)
+        raidIconHolder:SetFrameLevel(frame:GetFrameLevel() + 20)
+        local raidIcon = raidIconHolder:CreateTexture(nil, "OVERLAY", nil, 7)
+        local rmSize  = settings.raidMarkerSize or 28
+        local rmAlign = settings.raidMarkerAlign or "left"
+        local rmX     = settings.raidMarkerX or 0
+        local rmY     = settings.raidMarkerY or 0
+        raidIcon:SetSize(rmSize, rmSize)
+        if rmAlign == "left" then
+            raidIcon:SetPoint("RIGHT", frame, "LEFT", rmX, rmY)
+        elseif rmAlign == "center" then
+            raidIcon:SetPoint("CENTER", frame, "CENTER", rmX, rmY)
+        else
+            raidIcon:SetPoint("LEFT", frame, "RIGHT", rmX, rmY)
+        end
+        frame._raidMarkerIcon = raidIcon
+        frame._raidMarkerHolder = raidIconHolder
+        if settings.raidMarkerEnabled then
+            frame.RaidTargetIndicator = raidIcon
+        else
+            raidIcon:Hide()
+        end
+    end
+
     -- Text overlay frame
     local textOverlay = CreateFrame("Frame", nil, frame.Health)
     textOverlay:SetAllPoints(frame.Health)
@@ -5731,10 +5763,10 @@ local function ReloadFrames()
 
     ---------------------------------------------------------------------------
     --  Live-update raid target marker icon (size / alignment / X / Y / enabled)
-    --  for player, target, and focus frames.  Uses oUF's EnableElement /
+    --  for player, target, focus, and boss frames.  Uses oUF's EnableElement /
     --  DisableElement so the RAID_TARGET_UPDATE event is properly toggled.
     ---------------------------------------------------------------------------
-    local RAID_MARKER_UNITS = { "player", "target", "focus" }
+    local RAID_MARKER_UNITS = { "player", "target", "focus", "boss1", "boss2", "boss3", "boss4", "boss5" }
     for _, rmUnit in ipairs(RAID_MARKER_UNITS) do
         local rmFrame = frames[rmUnit]
         local icon = rmFrame and rmFrame._raidMarkerIcon
@@ -5745,12 +5777,23 @@ local function ReloadFrames()
             local rmX      = (rmS and rmS.raidMarkerX)     or 0
             local rmY      = (rmS and rmS.raidMarkerY)     or 0
             local rmEnabled = rmS and rmS.raidMarkerEnabled
-            local rmAnchor = (rmAlign == "left") and "TOPLEFT"
-                or (rmAlign == "center") and "TOP"
-                or "TOPRIGHT"
+            local isBoss = rmUnit:match("^boss%d$")
             icon:SetSize(rmSize, rmSize)
             icon:ClearAllPoints()
-            icon:SetPoint("CENTER", rmFrame, rmAnchor, rmX, rmY)
+            if isBoss then
+                if rmAlign == "left" then
+                    icon:SetPoint("RIGHT", rmFrame, "LEFT", rmX, rmY)
+                elseif rmAlign == "center" then
+                    icon:SetPoint("CENTER", rmFrame, "CENTER", rmX, rmY)
+                else
+                    icon:SetPoint("LEFT", rmFrame, "RIGHT", rmX, rmY)
+                end
+            else
+                local rmAnchor = (rmAlign == "left") and "TOPLEFT"
+                    or (rmAlign == "center") and "TOP"
+                    or "TOPRIGHT"
+                icon:SetPoint("CENTER", rmFrame, rmAnchor, rmX, rmY)
+            end
             if rmEnabled then
                 rmFrame.RaidTargetIndicator = icon
                 rmFrame:EnableElement("RaidTargetIndicator")
