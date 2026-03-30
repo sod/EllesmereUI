@@ -9,6 +9,7 @@ local ADDON_NAME = ...
 -- AceDB replaced by EllesmereUI.Lite.NewDB
 local EABR = EllesmereUI.Lite.NewAddon("EllesmereUIAuraBuffReminders")
 
+local _B = {}  -- beacon state table, populated later
 local Known = function(id) return id and (IsPlayerSpell(id) or IsSpellKnown(id)) end
 local InCombat = function() return InCombatLockdown and InCombatLockdown() end
 local floor, max, min, abs = math.floor, math.max, math.min, math.abs
@@ -1196,8 +1197,7 @@ local combatActiveIcons = {}
 -------------------------------------------------------------------------------
 local CURSOR_IMPORTANT = {
     -- All raid buffs are important (checked by cat == "raidbuff")
-    -- Specific aura/consumable keys:
-    es = true, som = true,
+    -- Beacon tracking uses its own independent system (_B)
 }
 local cursorAnchor
 local cursorIconPool = {}
@@ -1378,19 +1378,20 @@ local function FadeOutSecureIcons()
     end
 end
 
-local function ApplyGlow(btn, glowType, cr, cg, cb)
+local function ApplyGlow(btn, glowType, cr, cg, cb, overrideSz)
     if glowType == 0 then return end
     local entry = GLOW_TYPES[glowType]; if not entry then return end
     if not btn._eabrGlowWrapper then
         local w = CreateFrame("Frame", nil, btn); w:SetAllPoints(btn); w:SetFrameLevel(btn:GetFrameLevel()+1)
         btn._eabrGlowWrapper = w
     end
-    local wrapper = btn._eabrGlowWrapper; local sz = btn:GetWidth() or ICON_SIZE
+    local wrapper = btn._eabrGlowWrapper; local sz = overrideSz or btn:GetWidth() or ICON_SIZE
     StopAllGlows(wrapper)
     if entry.procedural then StartPixelGlow(wrapper, sz, cr, cg, cb)
     elseif entry.buttonGlow then StartButtonGlow(wrapper, sz, cr, cg, cb, 1.36)
     elseif entry.autocast then StartAutoCastShine(wrapper, sz, cr, cg, cb, 1.0)
     else StartFlipBookGlow(wrapper, sz, entry, cr, cg, cb) end
+    wrapper:SetAlpha(1)
     wrapper:Show()
 end
 
@@ -1594,10 +1595,10 @@ local function LayoutIcons()
     local allIcons = _layoutScratch
     wipe(allIcons)
     for _, btn in ipairs(activeIcons) do allIcons[#allIcons+1] = btn end
-    if _beaconIcons then
-        for _, id in ipairs(BEACON_ALL or {}) do
-            if _beaconIconState and _beaconIconState[id] and _beaconIcons[id] then
-                allIcons[#allIcons+1] = _beaconIcons[id]
+    if _B.icons then
+        for _, id in ipairs(_B.ALL or {}) do
+            if _B.iconState and _B.iconState[id] and _B.icons[id] then
+                allIcons[#allIcons+1] = _B.icons[id]
             end
         end
     end
@@ -1626,8 +1627,10 @@ local function ShowIcon(iconIdx, m)
     local p = db.profile.display
     local glowType = p.glowType or 0
     local gc = p.glowColor or DEFAULT_GLOW_COLOR
+    local baseScale = p.scale or 1.0
+    local sz = floor(ICON_SIZE * baseScale + 0.5)
     RemoveGlow(btn)
-    ApplyGlow(btn, glowType, gc.r, gc.g, gc.b)
+    ApplyGlow(btn, glowType, gc.r, gc.g, gc.b, sz)
     if p.showText then
         local tc = p.textColor or DEFAULT_TEXT_COLOR
         local fontPath = ResolveFontPath(p.textFont)
@@ -1668,8 +1671,10 @@ local function ShowTalentIcon(iconIdx, m)
     local p = db.profile.display
     local glowType = p.glowType or 0
     local gc = p.glowColor or DEFAULT_GLOW_COLOR
+    local baseScale = p.scale or 1.0
+    local sz = floor(ICON_SIZE * baseScale + 0.5)
     RemoveGlow(btn)
-    ApplyGlow(btn, glowType, gc.r, gc.g, gc.b)
+    ApplyGlow(btn, glowType, gc.r, gc.g, gc.b, sz)
     if p.showText then
         local tc = p.textColor or DEFAULT_TEXT_COLOR
         local fontPath = ResolveFontPath(p.textFont)
@@ -2161,7 +2166,8 @@ local specialsActive = inInstance or co.showSpecialsNonInstanced
     do
         local co = db.profile.consumables
         if co and co.enabled and co.enabled.coaches_whistle ~= false
-           and inInstance and (IsInGroup() or IsInRaid())
+           and inInstance and _cachedDiffID ~= 208
+           and (IsInGroup() or IsInRaid())
            and (GetInventoryItemID("player", 13) == 193718 or GetInventoryItemID("player", 14) == 193718) then
             local hasBuff = PlayerHasAuraByID(PARTNERED_TRINKET.buffIDs)
             if not hasBuff then
@@ -2247,8 +2253,8 @@ end
 end
 
 -- Reusable tables wiped each Refresh() call to avoid per-call allocation.
-local _refreshMissing = {}
-local _refreshTalentMissing = {}
+-- Wrapped to save file-scope local slots (200 limit).
+local _refreshMissing, _refreshTalentMissing, _wasResting = {}, {}, false
 
 local function Refresh()
     _cachedOutline = nil
@@ -2267,12 +2273,22 @@ local function Refresh()
         return
     end
 
-    -- Suppress while dead or in a rested area (city/inn)
+    -- Suppress while dead or in a rested area (city/inn).
+    -- Track rested state so combat at training dummies doesn't re-enable reminders.
     if UnitIsDeadOrGhost("player") then
         HideCombatIcons(); HideCursorIcons(); HideAllIcons(); return
     end
-    if IsResting() and not InCombat() then
-        HideCombatIcons(); HideCursorIcons(); HideAllIcons(); return
+    if IsResting() then
+        _wasResting = true
+        HideCombatIcons(); HideCursorIcons()
+        if InCombat() then FadeOutSecureIcons() else HideAllIcons() end
+        return
+    end
+    if _wasResting then
+        if InCombat() then
+            HideCombatIcons(); HideCursorIcons(); FadeOutSecureIcons(); return
+        end
+        _wasResting = false
     end
 
     CacheInstanceInfo()
@@ -2305,25 +2321,25 @@ local function Refresh()
     ---------------------------------------------------------------------------
     --  2) Auras (suppressed in M+ keystones)
     ---------------------------------------------------------------------------
-    if not inKeystone then
+    if not inKeystone and not inCombat then
         CollectAuras(missing, playerClass, specID, inInstance, inCombat)
     end
     if _memProbe then _m3 = collectgarbage("count") end
 
     ---------------------------------------------------------------------------
-    --  3) Consumables (suppressed in M+ keystones)
+    --  3) Consumables (suppressed in M+ keystones and always in combat)
     ---------------------------------------------------------------------------
-    if not inKeystone then
+    if not inKeystone and not inCombat then
         CollectConsumables(missing, playerClass, specID, inInstance, inKeystone, inCombat)
     end
     if _memProbe then _m4 = collectgarbage("count") end
 
     ---------------------------------------------------------------------------
-    --  4) Talent Reminders (suppressed in M+ keystones)
+    --  4) Talent Reminders (suppressed in M+ keystones and always in combat)
     ---------------------------------------------------------------------------
     local talentMissing = _refreshTalentMissing
     wipe(talentMissing)
-    if not inKeystone then
+    if not inKeystone and not inCombat then
         CollectTalentReminders(talentMissing, inInstance, inKeystone, inCombat)
     end
     if _memProbe then _m5 = collectgarbage("count") end
@@ -2583,45 +2599,43 @@ end
 --  Standalone Beacon Reminders — IsSpellOverlayed-based, combat-safe.
 --  Independent from the main aura/buff system.
 -------------------------------------------------------------------------------
-local _beaconFrame = CreateFrame("Frame")
-local _beaconIsPaladin = false
-local _beaconOverlayRegistered = false
-local _beaconAnchor
-local _beaconIcons = {}       -- [spellID] = frame
-local _beaconIconState = {}   -- [spellID] = true/false
-local _beaconGlowState = {}  -- [spellID] = true/false
-
-local BEACON_BOL = 53563
-local BEACON_BOF = 156910
-local BEACON_VIRTUE = 200025
-local BEACON_ALL = { BEACON_BOL, BEACON_BOF }
-
+_B.frame = CreateFrame("Frame")
+_B.isPaladin = false
+_B.overlayRegistered = false
+_B.anchor = nil
+_B.icons = {}
+_B.iconState = {}
+_B.glowState = {}
+_B.cachedInInstance = false
+_B.refreshPending = false
+_B.BOL = 53563
+_B.BOF = 156910
+_B.VIRTUE = 200025
+_B.ALL = { _B.BOL, _B.BOF }
 local IsSpellOverlayed = (C_SpellActivationOverlay and C_SpellActivationOverlay.IsSpellOverlayed) or IsSpellOverlayed
-
-local _beaconCachedInInstance = false
 
 local function BeaconUpdateInstanceCache()
     local _, instanceType, difficultyID = GetInstanceInfo()
     difficultyID = tonumber(difficultyID) or 0
-    if difficultyID == 0 then _beaconCachedInInstance = false; return end
+    if difficultyID == 0 then _B.cachedInInstance = false; return end
     if C_Garrison and C_Garrison.IsOnGarrisonMap and C_Garrison.IsOnGarrisonMap() then
-        _beaconCachedInInstance = false; return
+        _B.cachedInInstance = false; return
     end
-    _beaconCachedInInstance = (instanceType == "party" or instanceType == "raid")
+    _B.cachedInInstance = (instanceType == "party" or instanceType == "raid" or (instanceType == "scenario" and difficultyID == 208))
 end
 
 local function BeaconUpdateOverlayEvents()
-    if _beaconCachedInInstance and _beaconIsPaladin then
-        if not _beaconOverlayRegistered then
-            _beaconFrame:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW")
-            _beaconFrame:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE")
-            _beaconOverlayRegistered = true
+    if _B.cachedInInstance and _B.isPaladin then
+        if not _B.overlayRegistered then
+            _B.frame:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW")
+            _B.frame:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE")
+            _B.overlayRegistered = true
         end
     else
-        if _beaconOverlayRegistered then
-            _beaconFrame:UnregisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW")
-            _beaconFrame:UnregisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE")
-            _beaconOverlayRegistered = false
+        if _B.overlayRegistered then
+            _B.frame:UnregisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW")
+            _B.frame:UnregisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE")
+            _B.overlayRegistered = false
         end
     end
 end
@@ -2652,7 +2666,7 @@ local function BeaconLayoutIcons()
     -- Beacon icons are now merged into the main LayoutIcons row.
     -- Just trigger a main refresh so they appear in the unified line.
     -- Hide the separate beacon anchor since we don't use it anymore.
-    if _beaconAnchor then EllesmereUI.SetElementVisibility(_beaconAnchor, false) end
+    if _B.anchor then EllesmereUI.SetElementVisibility(_B.anchor, false) end
     -- Re-layout main icons to include/exclude beacon icons
     LayoutIcons()
 end
@@ -2663,13 +2677,15 @@ local function BeaconApplyGlow(f, show)
         local glowType = p and p.glowType or 0
         if glowType > 0 then
             local gc = p and p.glowColor or DEFAULT_GLOW_COLOR
-            ApplyGlow(f, glowType, gc.r, gc.g, gc.b)
+            local baseScale = p and p.scale or 1.0
+            local sz = floor(ICON_SIZE * baseScale + 0.5)
+            ApplyGlow(f, glowType, gc.r, gc.g, gc.b, sz)
         end
-        _beaconGlowState[f._spellID] = true
+        _B.glowState[f._spellID] = true
     else
-        if _beaconGlowState[f._spellID] then
+        if _B.glowState[f._spellID] then
             RemoveGlow(f)
-            _beaconGlowState[f._spellID] = false
+            _B.glowState[f._spellID] = false
         end
     end
 end
@@ -2686,7 +2702,7 @@ local function BeaconApplyText(f)
         f._text:ClearAllPoints()
         f._text:SetPoint("TOP", f, "BOTTOM", xOff, yOff)
         f._text:SetTextColor(tc.r, tc.g, tc.b, 1)
-        f._text:SetText(ShortLabel(f._spellID == BEACON_BOL and "Beacon of Light" or "Beacon of Faith"))
+        f._text:SetText(ShortLabel(f._spellID == _B.BOL and "Beacon of Light" or "Beacon of Faith"))
         f._text:Show()
     else
         f._text:SetText("")
@@ -2695,23 +2711,23 @@ local function BeaconApplyText(f)
 end
 
 local function BeaconSetVisible(spellID, show)
-    local f = _beaconIcons[spellID]
+    local f = _B.icons[spellID]
     if not f then return end
     local changed = false
     if show then
-        if not _beaconIconState[spellID] then
+        if not _B.iconState[spellID] then
             BeaconApplyText(f)
             f:Show()
-            _beaconIconState[spellID] = true
+            _B.iconState[spellID] = true
             BeaconApplyGlow(f, true)
             changed = true
         end
     else
-        if _beaconIconState[spellID] then
+        if _B.iconState[spellID] then
             BeaconApplyGlow(f, false)
             f._text:SetText("")
             f:Hide()
-            _beaconIconState[spellID] = false
+            _B.iconState[spellID] = false
             changed = true
         end
     end
@@ -2719,20 +2735,20 @@ local function BeaconSetVisible(spellID, show)
 end
 
 local function BeaconRefresh()
-    if not _beaconIsPaladin then return end
+    if not _B.isPaladin then return end
     if euiPanelOpen or not IsSpellOverlayed then
-        BeaconSetVisible(BEACON_BOL, false)
-        BeaconSetVisible(BEACON_BOF, false)
+        BeaconSetVisible(_B.BOL, false)
+        BeaconSetVisible(_B.BOF, false)
         return
     end
     if UnitInVehicle("player") or (IsMounted() and IsFlying()) then
-        BeaconSetVisible(BEACON_BOL, false)
-        BeaconSetVisible(BEACON_BOF, false)
+        BeaconSetVisible(_B.BOL, false)
+        BeaconSetVisible(_B.BOF, false)
         return
     end
-    if not _beaconCachedInInstance or not (IsInGroup() or IsInRaid()) then
-        BeaconSetVisible(BEACON_BOL, false)
-        BeaconSetVisible(BEACON_BOF, false)
+    if not _B.cachedInInstance or not (IsInGroup() or IsInRaid()) then
+        BeaconSetVisible(_B.BOL, false)
+        BeaconSetVisible(_B.BOF, false)
         return
     end
 
@@ -2740,44 +2756,43 @@ local function BeaconRefresh()
     local enabled = au and au.enabled
 
     local trackBOL = enabled and enabled.bol ~= false
-                     and Known(BEACON_BOL) and not Known(BEACON_VIRTUE)
+                     and Known(_B.BOL) and not Known(_B.VIRTUE)
     local trackBOF = enabled and enabled.bof ~= false
-                     and Known(BEACON_BOF)
+                     and Known(_B.BOF)
 
-    BeaconSetVisible(BEACON_BOL, trackBOL and IsSpellOverlayed(BEACON_BOL))
-    BeaconSetVisible(BEACON_BOF, trackBOF and IsSpellOverlayed(BEACON_BOF))
+    BeaconSetVisible(_B.BOL, trackBOL and IsSpellOverlayed(_B.BOL))
+    BeaconSetVisible(_B.BOF, trackBOF and IsSpellOverlayed(_B.BOF))
 end
 
-local _beaconRefreshPending = false
 local function BeaconRefreshSoon()
-    if _beaconRefreshPending then return end
-    _beaconRefreshPending = true
+    if _B.refreshPending then return end
+    _B.refreshPending = true
     C_Timer.After(0, function()
-        _beaconRefreshPending = false
+        _B.refreshPending = false
         BeaconRefresh()
     end)
 end
 
 local function BeaconInit()
     local _, classFile = UnitClass("player")
-    _beaconIsPaladin = (classFile == "PALADIN")
-    if not _beaconIsPaladin then return end
+    _B.isPaladin = (classFile == "PALADIN")
+    if not _B.isPaladin then return end
 
-    _beaconIcons[BEACON_BOL] = BeaconMakeIcon(BEACON_BOL)
-    _beaconIcons[BEACON_BOF] = BeaconMakeIcon(BEACON_BOF)
+    _B.icons[_B.BOL] = BeaconMakeIcon(_B.BOL)
+    _B.icons[_B.BOF] = BeaconMakeIcon(_B.BOF)
 
     -- Anchor follows the main combat anchor position
-    _beaconAnchor = CreateFrame("Frame", "EABR_BeaconAnchor", UIParent)
-    _beaconAnchor:SetSize(1, 1)
-    _beaconAnchor:SetFrameStrata("HIGH")
-    _beaconAnchor:EnableMouse(false)
-    _beaconAnchor:Show()
-    EllesmereUI.SetElementVisibility(_beaconAnchor, false)
+    _B.anchor = CreateFrame("Frame", "EABR_BeaconAnchor", UIParent)
+    _B.anchor:SetSize(1, 1)
+    _B.anchor:SetFrameStrata("HIGH")
+    _B.anchor:EnableMouse(false)
+    _B.anchor:Show()
+    EllesmereUI.SetElementVisibility(_B.anchor, false)
     -- Anchor to the combat anchor (created by OnEnable before this call)
     if combatAnchor then
-        _beaconAnchor:SetPoint("CENTER", combatAnchor, "CENTER", 0, -60)
+        _B.anchor:SetPoint("CENTER", combatAnchor, "CENTER", 0, -60)
     else
-        _beaconAnchor:SetPoint("CENTER", UIParent, "CENTER", 0, 200)
+        _B.anchor:SetPoint("CENTER", UIParent, "CENTER", 0, 200)
     end
 
     BeaconUpdateInstanceCache()
@@ -2787,20 +2802,20 @@ end
 
 -- Expose for options and anchor positioning
 _G._EABR_BeaconRefresh = BeaconRefresh
-_G._EABR_BeaconAnchor = function() return _beaconAnchor end
+_G._EABR_BeaconAnchor = function() return _B.anchor end
 
-_beaconFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-_beaconFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
-_beaconFrame:RegisterEvent("SPELLS_CHANGED")
-_beaconFrame:RegisterEvent("PLAYER_TALENT_UPDATE")
-_beaconFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-_beaconFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
-_beaconFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
-_beaconFrame:RegisterEvent("PLAYER_LEVEL_CHANGED")
-_beaconFrame:SetScript("OnEvent", function(_, e, id)
-    if not _beaconIsPaladin then return end
+_B.frame:RegisterEvent("PLAYER_ENTERING_WORLD")
+_B.frame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+_B.frame:RegisterEvent("SPELLS_CHANGED")
+_B.frame:RegisterEvent("PLAYER_TALENT_UPDATE")
+_B.frame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+_B.frame:RegisterEvent("TRAIT_CONFIG_UPDATED")
+_B.frame:RegisterEvent("GROUP_ROSTER_UPDATE")
+_B.frame:RegisterEvent("PLAYER_LEVEL_CHANGED")
+_B.frame:SetScript("OnEvent", function(_, e, id)
+    if not _B.isPaladin then return end
     if e == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW" or e == "SPELL_ACTIVATION_OVERLAY_GLOW_HIDE" then
-        if id == BEACON_BOL or id == BEACON_BOF then
+        if id == _B.BOL or id == _B.BOF then
             BeaconRefresh()
         end
         return
@@ -3216,16 +3231,18 @@ local function DetectUsedItem()
     for k, v in pairs(_bagSnapReuse) do lastBagSnapshot[k] = v end
 end
 
-local bagTrackFrame = CreateFrame("Frame")
-bagTrackFrame:RegisterEvent("BAG_UPDATE_DELAYED")
-bagTrackFrame:RegisterEvent("PLAYER_LOGIN")
-bagTrackFrame:SetScript("OnEvent", function(_, ev)
-    if ev == "PLAYER_LOGIN" then
-        C_Timer.After(1, function() SnapshotBags(lastBagSnapshot) end)
-    elseif ev == "BAG_UPDATE_DELAYED" then
-        DetectUsedItem()
-    end
-end)
+do
+    local f = CreateFrame("Frame")
+    f:RegisterEvent("BAG_UPDATE_DELAYED")
+    f:RegisterEvent("PLAYER_LOGIN")
+    f:SetScript("OnEvent", function(_, ev)
+        if ev == "PLAYER_LOGIN" then
+            C_Timer.After(1, function() SnapshotBags(lastBagSnapshot) end)
+        elseif ev == "BAG_UPDATE_DELAYED" then
+            DetectUsedItem()
+        end
+    end)
+end
 
 mainFrame:RegisterEvent("ENCOUNTER_START")
 mainFrame:RegisterEvent("PLAYER_REGEN_DISABLED")

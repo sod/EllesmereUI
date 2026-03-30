@@ -550,13 +550,20 @@ local function AcquireItemBtn()
     b:SetScript("OnEnter", function(self)
         if EQT._qtMouseoverIn then EQT._qtMouseoverIn() end
         if self._itemID then
-            GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-            GameTooltip:SetItemByID(self._itemID); GameTooltip:Show()
+            local tip = _G.EQT_ItemTooltip
+            if not tip then
+                tip = CreateFrame("GameTooltip", "EQT_ItemTooltip", UIParent, "GameTooltipTemplate")
+                tip:SetFrameStrata("TOOLTIP")
+            end
+            tip:SetOwner(self, "ANCHOR_LEFT")
+            tip:SetItemByID(self._itemID)
+            tip:Show()
         end
     end)
     b:SetScript("OnLeave", function()
         if EQT._qtMouseoverOut then EQT._qtMouseoverOut() end
-        GameTooltip:Hide()
+        local tip = _G.EQT_ItemTooltip
+        if tip then tip:Hide() end
     end)
     allItemBtns[#allItemBtns + 1] = b
     return b
@@ -939,11 +946,6 @@ local function GetScenarioSection()
         end
     end
 
-    if isDelve and delveLivesCur ~= nil then
-        AddDelveLivesObjective(objectives, seenText, delveLivesCur, delveLivesMax, delveDeathsUsed)
-    end
-
-
     if #objectives == 0 and title == "Scenario" then _cachedScenario = nil; return nil end
 
     _cachedScenario = {
@@ -952,6 +954,8 @@ local function GetScenarioSection()
         isDelve        = isDelve,
         bannerIcon     = bannerIcon,
         bannerTier     = bannerTier,
+        delveLives     = (isDelve and delveLivesCur) and delveLivesCur or nil,
+        delveLivesMax  = (isDelve and delveLivesMax) and delveLivesMax or nil,
         timerDuration  = timerDuration,
         timerStartTime = timerStartTime,
     }
@@ -1913,7 +1917,9 @@ function EQT:Refresh(skipAlphaFlash)
                 r.bannerIcon:Show()
             end
 
-            -- Tier badge circle (top-right)
+            -- Tier badge (top-right)
+            local tierAnchor = r.frame
+            local tierOffX = -13
             if scenario.bannerTier then
                 if not r.tierFS then
                     r.tierFS = r.frame:CreateFontString(nil, "OVERLAY")
@@ -1923,8 +1929,37 @@ function EQT:Refresh(skipAlphaFlash)
                 r.tierFS:SetTextColor(C.accent.r, C.accent.g, C.accent.b)
                 r.tierFS:SetText(scenario.bannerTier)
                 r.tierFS:ClearAllPoints()
-                r.tierFS:SetPoint("RIGHT", r.frame, "RIGHT", -13, 0)
+                r.tierFS:SetPoint("RIGHT", r.frame, "RIGHT", tierOffX, 0)
                 r.tierFS:Show()
+                tierAnchor = r.tierFS
+            end
+
+            -- Delve lives: heart icon + count to the left of tier
+            if scenario.delveLives then
+                if not r.livesFS then
+                    r.livesFS = r.frame:CreateFontString(nil, "OVERLAY")
+                    r.livesFS:SetJustifyH("RIGHT")
+                end
+                if not r.heartIcon then
+                    r.heartIcon = r.frame:CreateTexture(nil, "OVERLAY")
+                    r.heartIcon:SetAtlas("delves-scenario-heart-icon")
+                end
+                local livesText = scenario.delveLivesMax
+                    and string.format("%d/%d", scenario.delveLives, scenario.delveLivesMax)
+                    or tostring(scenario.delveLives)
+                SetFontSafe(r.livesFS, GlobalFont(), tfs, OutlineFlag())
+                r.livesFS:SetTextColor(0.9, 0.9, 0.9)
+                r.livesFS:SetText(livesText)
+                r.livesFS:ClearAllPoints()
+                r.livesFS:SetPoint("RIGHT", tierAnchor, "LEFT", -16, 0)
+                r.livesFS:Show()
+                r.heartIcon:SetSize(14, 14)
+                r.heartIcon:ClearAllPoints()
+                r.heartIcon:SetPoint("RIGHT", r.livesFS, "LEFT", -3, 0)
+                r.heartIcon:Show()
+            elseif r.livesFS then
+                r.livesFS:Hide()
+                if r.heartIcon then r.heartIcon:Hide() end
             end
 
             -- Title text (vertically centered in banner)
@@ -1958,10 +1993,10 @@ function EQT:Refresh(skipAlphaFlash)
             local cg = obj.finished and cc.g or oc.g
             local cb = obj.finished and cc.b or oc.b
             if obj.objType == "progressbar" and obj.numRequired and obj.numRequired > 0 then
-                AddProgressRow(obj.numFulfilled or 0, obj.numRequired)
                 if obj.text and obj.text ~= "" then
                     AddObjRow(obj.text, cr, cg, cb)
                 end
+                AddProgressRow(obj.numFulfilled or 0, obj.numRequired)
             else
                 if obj.text and obj.text ~= "" then
                     AddObjRow(obj.text, cr, cg, cb)
@@ -1969,6 +2004,7 @@ function EQT:Refresh(skipAlphaFlash)
             end
         end
         end -- if not dc
+        yOff = yOff + 10
     end
 
     -- Order: Recipes (top), Delves, Active WQ, Prey, Zone, World, Quests (bottom)
@@ -2625,7 +2661,7 @@ function EQT:Init()
             sf:SetScript("OnHide", function(frame)
                 local fromGameMenu = frame.screenInfo and frame.screenInfo.gameMenuRequest
                 frame.screenInfo = nil
-                C_TalkingHead_SetConversationsDeferred(false)
+                if C_TalkingHead_SetConversationsDeferred then C_TalkingHead_SetConversationsDeferred(false) end
                 if _G.AlertFrame and _G.AlertFrame.SetAlertsEnabled then
                     _G.AlertFrame:SetAlertsEnabled(true, "splashFrame")
                 end
@@ -2822,9 +2858,12 @@ function EQT:Init()
             _questListsCached = false
             EQT:ClearSectionCache()
         end
-        -- Invalidate scenario cache only on scenario-related events
+        -- Invalidate scenario cache on scenario-related events.
+        -- Force structural so the full Refresh() re-reads the scenario cache
+        -- (RefreshProgress only handles quest objectives, not scenarios).
         if SCENARIO_EVENTS[event] then
             InvalidateScenarioCache()
+            isStructural = true
         end
         -- Invalidate quest log cache so next scan re-reads
         InvalidateQuestLogCache()

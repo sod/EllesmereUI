@@ -590,6 +590,8 @@ local function DecorateFrame(frame, barData)
                 local fc2 = _ecmeFC[frame]
                 local bk = fc2 and fc2.barKey
                 local bd2 = bk and barDataByKey[bk]
+                local anim = bd2 and bd2.activeStateAnim or "blizzard"
+                if anim ~= "hideActive" then return end
                 local sa = bd2 and bd2.swipeAlpha or 0.7
                 if r == 0 and g == 0 and b == 0 and a == sa then return end
                 fd._inSwipeHook = true
@@ -1688,9 +1690,33 @@ function ns.RefreshAllOverlays()
 end
 
 -------------------------------------------------------------------------------
+--  Lightweight position re-snap: re-applies stored _cdmAnchor on all claimed
+--  icons without re-enumerating viewers or re-categorizing frames.
+--  Used by OnActiveStateChanged where Blizzard may move frames but the icon
+--  list hasn't changed.
+-------------------------------------------------------------------------------
+local function ReapplyPositions()
+    for barKey, icons in pairs(cdmBarIcons) do
+        if icons then
+            for i = 1, #icons do
+                local frame = icons[i]
+                if frame then
+                    local fd = hookFrameData[frame]
+                    local anchor = fd and fd._cdmAnchor
+                    if anchor then
+                        frame:ClearAllPoints()
+                        frame:SetPoint(anchor[1], anchor[2], anchor[3], anchor[4], anchor[5])
+                    end
+                end
+            end
+        end
+    end
+end
+
+-------------------------------------------------------------------------------
 --  Reanchor Queue
 -------------------------------------------------------------------------------
-local REANCHOR_THROTTLE = 0.15
+local REANCHOR_THROTTLE = 0.2
 local _lastReanchorTime = 0
 
 local function QueueReanchor()
@@ -1777,7 +1803,7 @@ function ns.SetupViewerHooks()
                 -- becomes active/inactive. Queue reanchor so we update layout.
                 if frame.OnActiveStateChanged then
                     hooksecurefunc(frame, "OnActiveStateChanged", function()
-                        QueueReanchor()
+                        ReapplyPositions()
                     end)
                 end
             end

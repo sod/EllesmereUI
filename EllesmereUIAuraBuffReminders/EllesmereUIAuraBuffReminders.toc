@@ -4,7 +4,7 @@
 ## Group: EllesmereUI
 ## Notes: Reminders for upkeeping Auras, Buffs and Consumables
 ## Author: Ellesmere
-## Version: 5.9.2
+## Version: 5.9.3
 ## Dependencies: EllesmereUI
 ## SavedVariables: EllesmereUIAuraBuffRemindersDB
 ## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga

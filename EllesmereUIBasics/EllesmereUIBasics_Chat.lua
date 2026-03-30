@@ -363,11 +363,9 @@ local function CreateCopyButton(chatFrame)
         ShowCopyDialog(chatFrame)
     end)
     btn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:AddLine("Copy Chat", 1, 1, 1)
-        GameTooltip:Show()
+        EllesmereUI.ShowWidgetTooltip(self, "Copy Chat")
     end)
-    btn:SetScript("OnLeave", GameTooltip_Hide)
+    btn:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
     copyButtons[chatFrame] = btn
     return btn
 end
@@ -516,11 +514,9 @@ local function CreateSearchButton(chatFrame)
     btn:GetHighlightTexture():SetAlpha(0.3)
     btn:SetScript("OnClick", ShowSearchDialog)
     btn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:AddLine("Search Chat", 1, 1, 1)
-        GameTooltip:Show()
+        EllesmereUI.ShowWidgetTooltip(self, "Search Chat")
     end)
-    btn:SetScript("OnLeave", GameTooltip_Hide)
+    btn:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
     searchButtons[chatFrame] = btn
     return btn
 end
