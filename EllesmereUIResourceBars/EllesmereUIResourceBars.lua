@@ -615,7 +615,10 @@ local function CalcPipGeometry(totalW, numPips, pipSp, frame)
     local cursor = 0
     for i = 1, numPips do
         local w = basePx + (i <= extraPx and 1 or 0)
-        slots[i] = { x0 = cursor * onePixel, x1 = (cursor + w) * onePixel }
+        local x1 = (cursor + w) * onePixel
+        -- Clamp last pip's right edge to totalW so it never exceeds the container
+        if i == numPips and x1 > totalW then x1 = totalW end
+        slots[i] = { x0 = cursor * onePixel, x1 = x1 }
         cursor = cursor + w + spPx
     end
 
@@ -651,21 +654,40 @@ end
 --  Bar creation helpers
 -------------------------------------------------------------------------------
 local function CreateStatusBar(parent, name, w, h, borderSize, borderR, borderG, borderB, borderA)
-    local bar = CreateFrame("StatusBar", name, parent)
+    -- Outer container: holds the border and text (never clipped).
+    local bar = CreateFrame("Frame", name, parent)
     bar:SetSize(w, h)
-    bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")
-    bar:SetMinMaxValues(0, 1)
-    bar:SetValue(0)
     bar:EnableMouse(false)
-    bar:SetClipsChildren(true)
 
-    -- Background
-    local bg = bar:CreateTexture(nil, "BACKGROUND")
+    -- Inner StatusBar: clips its fill to prevent bleed past the border.
+    local sb = CreateFrame("StatusBar", nil, bar)
+    sb:SetAllPoints()
+    sb:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")
+    sb:SetMinMaxValues(0, 1)
+    sb:SetValue(0)
+    sb:SetClipsChildren(true)
+    bar._sb = sb
+
+    -- Forward StatusBar methods to the inner bar so callers don't change
+    bar.SetMinMaxValues = function(_, ...) sb:SetMinMaxValues(...) end
+    bar.SetValue = function(_, ...) sb:SetValue(...) end
+    bar.GetValue = function(_) return sb:GetValue() end
+    bar.SetStatusBarTexture = function(_, ...) sb:SetStatusBarTexture(...) end
+    bar.GetStatusBarTexture = function(_) return sb:GetStatusBarTexture() end
+    bar.SetStatusBarColor = function(_, ...) sb:SetStatusBarColor(...) end
+    bar.GetStatusBarColor = function(_) return sb:GetStatusBarColor() end
+    bar.SetFillStyle = function(_, ...) sb:SetFillStyle(...) end
+    bar.SetOrientation = function(_, ...) sb:SetOrientation(...) end
+    bar.SetRotatesTexture = function(_, ...) sb:SetRotatesTexture(...) end
+    bar.SetReverseFill = function(_, ...) sb:SetReverseFill(...) end
+
+    -- Background (inside the clipped area)
+    local bg = sb:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
     bg:SetColorTexture(0x11/255, 0x11/255, 0x11/255, 0.75)
     bar._bg = bg
 
-    -- Pixel-perfect border with variable size
+    -- Pixel-perfect border (on outer container, not clipped)
     local bSz = borderSize or 1
     bar._border = MakePixelBorder(bar, borderR or 0, borderG or 0, borderB or 0, borderA or 1, bSz)
 
@@ -679,7 +701,7 @@ local function CreateStatusBar(parent, name, w, h, borderSize, borderR, borderG,
         end
     end
 
-    -- Text overlay on a child frame above the border (above frame level + 1 border)
+    -- Text overlay (on outer container, not clipped)
     local textFrame = CreateFrame("Frame", nil, bar)
     textFrame:SetAllPoints(bar)
     textFrame:SetFrameLevel(bar:GetFrameLevel() + 2)
@@ -712,7 +734,6 @@ local function CreatePip(parent, w, h, idx, borderSize, borderR, borderG, border
     fill:SetColorTexture(1, 1, 1, 1)
     pip._fill = fill
     pip._texKey = nil  -- current bar texture key
-    pip:SetClipsChildren(true)
 
     -- Pixel-perfect border with variable size
     local bSz = borderSize or 1
@@ -1533,7 +1554,6 @@ local function BuildBars()
         secondaryFrame = CreateFrame("Frame", "ERB_SecondaryFrame", mainFrame)
         secondaryFrame:SetFrameStrata("MEDIUM")
         secondaryFrame:SetFrameLevel(10)
-        secondaryFrame:SetClipsChildren(true)
     end
     if sp.enabled ~= false and cachedSecondary then
 

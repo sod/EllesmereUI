@@ -1240,6 +1240,19 @@ function ns.UpdateTrackedBuffBarTimers()
         end
     end
 
+    -- Deferred name fill: if BuildTrackedBuffBars couldn't resolve the spell
+    -- name (data not loaded yet), retry here each tick until it succeeds.
+    for i, cfg in ipairs(bars) do
+        local bar = tbbFrames[i]
+        if bar and bar._nameText and not bar._nameSet and cfg.spellID and cfg.spellID > 0 then
+            local si = C_Spell.GetSpellInfo(cfg.spellID)
+            if si and si.name then
+                bar._nameText:SetText(si.name)
+                bar._nameSet = true
+            end
+        end
+    end
+
     -- Spark re-anchor: use cached texture ref to avoid GetStatusBarTexture() alloc.
     -- SetPoint on an already-anchored spark to the same anchor is a no-op internally.
     for _, bar in ipairs(tbbFrames) do
@@ -1276,6 +1289,26 @@ end
 -------------------------------------------------------------------------------
 --  Build / Rebuild All Tracking Bars
 -------------------------------------------------------------------------------
+SLASH_TBBDEBUG1 = "/tbbdebug"
+SlashCmdList.TBBDEBUG = function()
+    local anchors = EllesmereUIDB and EllesmereUIDB.unlockAnchors
+    if not anchors then print("|cffff0000[TBB]|r no unlockAnchors"); return end
+    local found = false
+    for k, v in pairs(anchors) do
+        if k:sub(1, 4) == "TBB_" then
+            print("|cff00ff00[TBB]|r " .. k .. " -> target=" .. tostring(v.target) .. " side=" .. tostring(v.side))
+            found = true
+        end
+    end
+    if not found then print("|cffff0000[TBB]|r no TBB anchors found in unlockAnchors") end
+end
+
+function ns.HideAllTBB()
+    for i = 1, #tbbFrames do
+        if tbbFrames[i] then tbbFrames[i]:Hide() end
+    end
+end
+
 function ns.BuildTrackedBuffBars()
     ECME = ns.ECME
     if not ECME or not ECME.db then return end
@@ -1338,7 +1371,7 @@ function ns.BuildTrackedBuffBars()
         end
         local bar = tbbFrames[i]
 
-        if cfg.enabled == false then
+        if cfg.enabled == false or ns._tbbSpecSwapPending then
             bar:Hide()
         else
             anyEnabled = true
@@ -1365,9 +1398,13 @@ function ns.BuildTrackedBuffBars()
                 local displayName = cfg.name
                 if (not displayName or displayName == "") and cfg.spellID and cfg.spellID > 0 then
                     local spInfo = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(cfg.spellID)
-                    displayName = spInfo and spInfo.name or ""
+                    displayName = spInfo and spInfo.name
+                    if not displayName and C_Spell.RequestLoadSpellData then
+                        C_Spell.RequestLoadSpellData(cfg.spellID)
+                    end
                 end
                 bar._nameText:SetText(displayName or "")
+                bar._nameSet = displayName and displayName ~= "" or false
             end
 
             -- Saved position
@@ -1403,6 +1440,7 @@ function ns.BuildTrackedBuffBars()
                 if tbbAccum < 0.016 then return end
                 self._lastDt = tbbAccum
                 tbbAccum = 0
+                if ns._specChangePending or ns._tbbSpecSwapPending then return end
                 ns.UpdateTrackedBuffBarTimers()
             end)
         end
@@ -1422,6 +1460,10 @@ function ns.RegisterTBBUnlockElements()
     if not EllesmereUI or not EllesmereUI.RegisterUnlockElements then return end
     if not ECME or not ECME.db then return end
     local MK = EllesmereUI.MakeUnlockElement
+    -- Never call UnregisterUnlockElement for TBB keys -- it triggers
+    -- PruneStaleLinks which destroys saved anchor data in unlockAnchors.
+    -- Instead, just overwrite registrations. The isHidden callback handles
+    -- hiding movers for bars that don't exist in the current spec.
     local tbb = ns.GetTrackedBuffBars()
     local bars = tbb and tbb.bars
     if not bars or #bars == 0 then return end
