@@ -6234,7 +6234,11 @@ function EAB:OnInitialize()
     -- Edit Mode has fully applied bar positions/sizes.
     -- Uses the per-install flag on the SV root, not per-profile.
     local sv = self.db.sv
-    self._needsCapture = not sv._capturedOnce
+    -- Migrate old shared flag to per-addon key (v5.9.6+)
+    if sv._capturedOnce and not sv._capturedOnce_EAB then
+        sv._capturedOnce_EAB = true
+    end
+    self._needsCapture = not sv._capturedOnce_EAB
 
     -- Slash commands
     -- Expose apply hook for PP scale change re-apply
@@ -6366,7 +6370,7 @@ function EAB:OnFirstLogin()
     end
 
     -- Mark capture as done so we never read Edit Mode again (per-install flag)
-    self.db.sv._capturedOnce = true
+    self.db.sv._capturedOnce_EAB = true
     self._needsCapture = false
 
     -- Stance bar visibility must always be "Always" it manages its own

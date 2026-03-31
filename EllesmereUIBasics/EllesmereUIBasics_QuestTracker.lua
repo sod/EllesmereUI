@@ -534,7 +534,7 @@ local function AcquireItemBtn()
     -- Find a hidden button or create new one
     for _, b in ipairs(allItemBtns) do
         if not b:IsShown() then
-            b._itemID = nil; b._logIdx = nil
+            b._itemID = nil
             return b
         end
     end
@@ -590,7 +590,7 @@ local function GetQuestItem(qID)
     if not idx or idx == 0 then return nil end
     local name, tex, charges, _, t0, dur, _, _, _, itemID = GetQuestLogSpecialItemInfo(idx)
     if not name then return nil end
-    return {itemID=itemID, logIdx=idx, name=name, texture=tex, charges=charges, startTime=t0, duration=dur}
+    return {itemID=itemID, name=name, texture=tex, charges=charges, startTime=t0, duration=dur}
 end
 
 local INTERNAL_TITLES = { ["Tracking Quest"]=true, [""]=true }
@@ -1677,7 +1677,7 @@ function EQT:Refresh(skipAlphaFlash)
             -- Anchor to r.frame but parented to UIParent - use SetPoint with explicit frame ref
             btn:SetPoint("RIGHT", r.frame, "RIGHT", -ITEM_PAD, 0)
             btn:SetFrameLevel(r.frame:GetFrameLevel() + 2)
-            btn._icon:SetTexture(item.texture); btn._itemID = item.itemID; btn._logIdx = item.logIdx
+            btn._icon:SetTexture(item.texture); btn._itemID = item.itemID
             -- Set item attribute directly (we are outside combat at Refresh time)
             if not InCombatLockdown() then btn:SetAttribute("item", item.name) end
             if item.startTime and item.startTime > 0 and item.duration and item.duration > 0 then

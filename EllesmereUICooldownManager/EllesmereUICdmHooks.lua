@@ -1338,7 +1338,8 @@ local function CollectAndReanchor()
                         FC(frame).barKey = barKey
                         FC(frame).spellID = entry.baseSpellID or entry.spellID
                         icons[count] = frame
-                        frame:SetAlpha(1)
+                        local barHidden = container and container._visHidden
+                        frame:SetAlpha(barHidden and 0 or 1)
                         frame:Show()
                         if frame.Cooldown and frame.Cooldown.SetDrawSwipe then
                             frame.Cooldown:SetDrawSwipe(true)

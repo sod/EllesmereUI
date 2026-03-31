@@ -657,6 +657,7 @@ local function CreateStatusBar(parent, name, w, h, borderSize, borderR, borderG,
     bar:SetMinMaxValues(0, 1)
     bar:SetValue(0)
     bar:EnableMouse(false)
+    bar:SetClipsChildren(true)
 
     -- Background
     local bg = bar:CreateTexture(nil, "BACKGROUND")
@@ -711,6 +712,7 @@ local function CreatePip(parent, w, h, idx, borderSize, borderR, borderG, border
     fill:SetColorTexture(1, 1, 1, 1)
     pip._fill = fill
     pip._texKey = nil  -- current bar texture key
+    pip:SetClipsChildren(true)
 
     -- Pixel-perfect border with variable size
     local bSz = borderSize or 1
@@ -1531,6 +1533,7 @@ local function BuildBars()
         secondaryFrame = CreateFrame("Frame", "ERB_SecondaryFrame", mainFrame)
         secondaryFrame:SetFrameStrata("MEDIUM")
         secondaryFrame:SetFrameLevel(10)
+        secondaryFrame:SetClipsChildren(true)
     end
     if sp.enabled ~= false and cachedSecondary then
 

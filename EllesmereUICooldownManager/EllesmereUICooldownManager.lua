@@ -3775,7 +3775,7 @@ local function CDMFirstLoginCapture()
     end
 
     p._capturedOnce = nil  -- no longer per-profile
-    ECME.db.sv._capturedOnce = true
+    ECME.db.sv._capturedOnce_CDM = true
 end
 
 --- Repopulate all main bars from Blizzard CDM for the current spec.
@@ -4069,7 +4069,11 @@ function ECME:OnInitialize()
     end)
 
     -- Check if we need first-login capture (per-install flag on SV root)
-    self._needsCapture = not self.db.sv._capturedOnce
+    -- Migrate old shared flag to per-addon key (v5.9.6+)
+    if self.db.sv._capturedOnce and not self.db.sv._capturedOnce_CDM then
+        self.db.sv._capturedOnce_CDM = true
+    end
+    self._needsCapture = not self.db.sv._capturedOnce_CDM
 
     -- Expose for options
     _G._ECME_AceDB = self.db

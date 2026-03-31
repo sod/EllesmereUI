@@ -2251,12 +2251,13 @@ local function ApplyCastbarUnlockPos(castbarBg, unit)
     local key = CastbarUnlockKey(unit)
     if not key then return false end
     -- If the castbar is anchored to another element via the unlock system,
-    -- let the anchor system position it — don't apply the positions entry
-    -- which may be stale/corrupted CENTER/CENTER with no offsets.
+    -- apply immediately via ReapplyOwnAnchor so there's no positioning gap
+    -- between ReloadFrames and the deferred ApplySavedPositions.
     local anchors = EllesmereUIDB and EllesmereUIDB.unlockAnchors
     if anchors and anchors[key] and anchors[key].target then
-        -- Return true to skip default positioning — the unlock system's
-        -- ReapplyOwnAnchor will handle the actual position.
+        if EllesmereUI.ReapplyOwnAnchor then
+            EllesmereUI.ReapplyOwnAnchor(key)
+        end
         return true
     end
     local pos = db and db.profile and db.profile.positions and db.profile.positions[key]

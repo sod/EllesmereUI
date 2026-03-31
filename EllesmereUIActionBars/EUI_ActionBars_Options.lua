@@ -4146,7 +4146,7 @@ initFrame:SetScript("OnEvent", function(self)
             -- Clear the per-install capture flag so the snapshot re-runs
             -- after reload and picks up Blizzard's current bar layout.
             if EAB.db and EAB.db.sv then
-                EAB.db.sv._capturedOnce = nil
+                EAB.db.sv._capturedOnce_EAB = nil
             end
             ReloadUI()
         end,

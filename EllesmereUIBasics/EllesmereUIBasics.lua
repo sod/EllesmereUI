@@ -544,7 +544,6 @@ local function HideMinimapButton(name)
                 for _, btnName in ipairs(entry.names) do
                     if btnName == name and mp[entry.key] then
                         self:SetAlpha(0)
-                        self:EnableMouse(false)
                         return
                     end
                 end
@@ -558,6 +557,7 @@ local function ShowMinimapButton(name)
     local btn = _G[name]
     if not btn then return end
     btn:SetAlpha(1)
+    btn:EnableMouse(true)
     btn:Show()
 end
 
@@ -946,7 +946,6 @@ local function HideMinimapChild(btn)
             local mp = _G._EBS_AceDB and _G._EBS_AceDB.profile.minimap
             if mp and mp.enabled and not flyoutOwnedFrames[self] then
                 self:SetAlpha(0)
-                self:EnableMouse(false)
             end
         end)
         addonButtonHooks[btn] = true
@@ -955,6 +954,7 @@ end
 
 local function ShowMinimapChild(btn)
     btn:SetAlpha(1)
+    btn:EnableMouse(true)
     btn:Show()
 end
 
@@ -1450,6 +1450,53 @@ local function ApplyMinimap()
         self:SetScript("OnUpdate", nil)
         minimap:SetZoom(self._targetZoom)
     end)
+
+    -- Reposition zoom buttons to bottom-right corner of the minimap.
+    -- Parent to minimap, raise frame level above the map surface, and
+    -- hook SetPoint to prevent Blizzard from re-anchoring them.
+    -- Midnight uses Minimap.ZoomIn/ZoomOut (not global MinimapZoomIn).
+    local zoomIn = minimap.ZoomIn or _G.MinimapZoomIn
+    local zoomOut = minimap.ZoomOut or _G.MinimapZoomOut
+    if zoomIn then
+        zoomIn:SetParent(minimap)
+        zoomIn:SetFrameLevel(minimap:GetFrameLevel() + 10)
+        zoomIn:ClearAllPoints()
+        zoomIn:SetPoint("BOTTOMRIGHT", minimap, "BOTTOMRIGHT", -2, 20)
+        zoomIn:EnableMouse(true)
+        zoomIn:Show()
+        if not zoomIn._ebsHooked then
+            hooksecurefunc(zoomIn, "SetPoint", function(self)
+                if self._ebsInHook then return end
+                self._ebsInHook = true
+                self:ClearAllPoints()
+                self:SetPoint("BOTTOMRIGHT", minimap, "BOTTOMRIGHT", -2, 20)
+                self._ebsInHook = false
+            end)
+            zoomIn._ebsHooked = true
+        end
+    end
+    if zoomOut then
+        zoomOut:SetParent(minimap)
+        zoomOut:SetFrameLevel(minimap:GetFrameLevel() + 10)
+        zoomOut:ClearAllPoints()
+        zoomOut:SetPoint("BOTTOMRIGHT", minimap, "BOTTOMRIGHT", -2, 2)
+        zoomOut:EnableMouse(true)
+        zoomOut:Show()
+        if not zoomOut._ebsHooked then
+            hooksecurefunc(zoomOut, "SetPoint", function(self)
+                if self._ebsInHook then return end
+                self._ebsInHook = true
+                self:ClearAllPoints()
+                self:SetPoint("BOTTOMRIGHT", minimap, "BOTTOMRIGHT", -2, 2)
+                self._ebsInHook = false
+            end)
+            zoomOut._ebsHooked = true
+        end
+    end
+
+    -- Mark zoom buttons so GatherMinimapButtons skips them
+    if zoomIn then flyoutOwnedFrames[zoomIn] = true end
+    if zoomOut then flyoutOwnedFrames[zoomOut] = true end
 
     -- Flyout toggle button (bottom-left corner) -- create before hiding children
     CreateFlyoutToggle()
