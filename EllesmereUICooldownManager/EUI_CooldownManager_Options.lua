@@ -4107,6 +4107,60 @@ initFrame:SetScript("OnEvent", function(self)
         if removeOnly then
             -- Per-icon settings (CD/utility bars only, not buff/custom_buff)
             if slotIndex and not isBuffBar and not isCustomBuff then
+                -- Insert Divider Before / After options (available for any non-divider slot)
+                local divSep = inner:CreateTexture(nil, "ARTWORK")
+                divSep:SetHeight(1)
+                divSep:SetColorTexture(1, 1, 1, 0.10)
+                divSep:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH - 4)
+                divSep:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH - 4)
+                mH = mH + 9
+
+                local divBefItem = CreateFrame("Button", nil, inner)
+                divBefItem:SetHeight(ITEM_H)
+                divBefItem:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH)
+                divBefItem:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH)
+                divBefItem:SetFrameLevel(menu:GetFrameLevel() + 2)
+                local divBefLbl = divBefItem:CreateFontString(nil, "OVERLAY")
+                divBefLbl:SetFont(FONT_PATH, 11, GetCDMOptOutline())
+                divBefLbl:SetPoint("LEFT", 10, 0)
+                divBefLbl:SetJustifyH("LEFT")
+                divBefLbl:SetText("Insert Divider Before")
+                divBefLbl:SetTextColor(tDimR, tDimG, tDimB, tDimA)
+                local divBefHl = divBefItem:CreateTexture(nil, "ARTWORK")
+                divBefHl:SetAllPoints(); divBefHl:SetColorTexture(1, 1, 1, 0); divBefHl:SetAlpha(0)
+                divBefItem:SetScript("OnEnter", function() divBefLbl:SetTextColor(1,1,1,1); divBefHl:SetColorTexture(1,1,1,hlA); divBefHl:SetAlpha(1) end)
+                divBefItem:SetScript("OnLeave", function() divBefLbl:SetTextColor(tDimR,tDimG,tDimB,tDimA); divBefHl:SetAlpha(0) end)
+                divBefItem:SetScript("OnClick", function()
+                    menu:Hide()
+                    ns.InsertDivider(barKey, slotIndex)
+                    RefreshCDPreview()
+                end)
+                allItems[#allItems + 1] = divBefItem
+                mH = mH + ITEM_H
+
+                local divAftItem = CreateFrame("Button", nil, inner)
+                divAftItem:SetHeight(ITEM_H)
+                divAftItem:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH)
+                divAftItem:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH)
+                divAftItem:SetFrameLevel(menu:GetFrameLevel() + 2)
+                local divAftLbl = divAftItem:CreateFontString(nil, "OVERLAY")
+                divAftLbl:SetFont(FONT_PATH, 11, GetCDMOptOutline())
+                divAftLbl:SetPoint("LEFT", 10, 0)
+                divAftLbl:SetJustifyH("LEFT")
+                divAftLbl:SetText("Insert Divider After")
+                divAftLbl:SetTextColor(tDimR, tDimG, tDimB, tDimA)
+                local divAftHl = divAftItem:CreateTexture(nil, "ARTWORK")
+                divAftHl:SetAllPoints(); divAftHl:SetColorTexture(1, 1, 1, 0); divAftHl:SetAlpha(0)
+                divAftItem:SetScript("OnEnter", function() divAftLbl:SetTextColor(1,1,1,1); divAftHl:SetColorTexture(1,1,1,hlA); divAftHl:SetAlpha(1) end)
+                divAftItem:SetScript("OnLeave", function() divAftLbl:SetTextColor(tDimR,tDimG,tDimB,tDimA); divAftHl:SetAlpha(0) end)
+                divAftItem:SetScript("OnClick", function()
+                    menu:Hide()
+                    ns.InsertDivider(barKey, slotIndex + 1)
+                    RefreshCDPreview()
+                end)
+                allItems[#allItems + 1] = divAftItem
+                mH = mH + ITEM_H
+
                 local sd = ns.GetBarSpellData(barKey)
                 local spellID = sd and sd.assignedSpells and sd.assignedSpells[slotIndex]
                 if spellID and spellID > 0 then
@@ -6316,6 +6370,82 @@ initFrame:SetScript("OnEvent", function(self)
         -- to empty array when no buffs are active).
         -- EnsureAssignedSpells is defined above ShowSpellPicker
 
+        local function ShowDividerContextMenu(anchor, barKey, idx)
+            if _spellPickerMenu and _spellPickerMenu:IsShown() and _spellPickerMenu._anchorFrame == anchor then
+                _spellPickerMenu:Hide()
+                return
+            end
+            if _spellPickerMenu then _spellPickerMenu:Hide() end
+
+            local mBgR  = EllesmereUI.DD_BG_R  or 0.075
+            local mBgG  = EllesmereUI.DD_BG_G  or 0.113
+            local mBgB  = EllesmereUI.DD_BG_B  or 0.141
+            local mBgA  = EllesmereUI.DD_BG_HA or 0.98
+            local mBrdA = EllesmereUI.DD_BRD_A or 0.20
+            local hlA   = EllesmereUI.DD_ITEM_HL_A or 0.08
+            local tDimR = EllesmereUI.TEXT_DIM_R or 0.7
+            local tDimG = EllesmereUI.TEXT_DIM_G or 0.7
+            local tDimB = EllesmereUI.TEXT_DIM_B or 0.7
+            local tDimA = EllesmereUI.TEXT_DIM_A or 0.85
+
+            local menuW = 180
+            local ITEM_H = 26
+
+            local menu = CreateFrame("Frame", nil, UIParent)
+            menu:SetFrameStrata("FULLSCREEN_DIALOG")
+            menu:SetFrameLevel(300)
+            menu:SetClampedToScreen(true)
+            menu:SetSize(menuW, ITEM_H + 8)
+            menu:EnableMouse(true)
+
+            local bg = menu:CreateTexture(nil, "BACKGROUND")
+            bg:SetAllPoints(); bg:SetColorTexture(mBgR, mBgG, mBgB, mBgA)
+            EllesmereUI.MakeBorder(menu, 1, 1, 1, mBrdA, EllesmereUI.PP)
+
+            local rmItem = CreateFrame("Button", nil, menu)
+            rmItem:SetHeight(ITEM_H)
+            rmItem:SetPoint("TOPLEFT", menu, "TOPLEFT", 1, -4)
+            rmItem:SetPoint("TOPRIGHT", menu, "TOPRIGHT", -1, -4)
+            rmItem:SetFrameLevel(menu:GetFrameLevel() + 2)
+
+            local rmLbl = rmItem:CreateFontString(nil, "OVERLAY")
+            rmLbl:SetFont(FONT_PATH, 11, GetCDMOptOutline())
+            rmLbl:SetPoint("LEFT", 10, 0)
+            rmLbl:SetJustifyH("LEFT")
+            rmLbl:SetText("Remove Divider")
+            rmLbl:SetTextColor(tDimR, tDimG, tDimB, tDimA)
+
+            local rmHl = rmItem:CreateTexture(nil, "ARTWORK")
+            rmHl:SetAllPoints(); rmHl:SetColorTexture(1, 1, 1, 0); rmHl:SetAlpha(0)
+
+            rmItem:SetScript("OnEnter", function()
+                rmLbl:SetTextColor(1, 1, 1, 1)
+                rmHl:SetColorTexture(1, 1, 1, hlA); rmHl:SetAlpha(1)
+            end)
+            rmItem:SetScript("OnLeave", function()
+                rmLbl:SetTextColor(tDimR, tDimG, tDimB, tDimA)
+                rmHl:SetAlpha(0)
+            end)
+            rmItem:SetScript("OnClick", function()
+                menu:Hide()
+                ns.RemoveDivider(barKey, idx)
+                RefreshCDPreview()
+            end)
+
+            menu:SetPoint("TOP", anchor, "BOTTOM", 0, -4)
+            menu._anchorFrame = anchor
+            _spellPickerMenu = menu
+            menu:SetScript("OnUpdate", function(m)
+                if not m:IsMouseOver() and not anchor:IsMouseOver() and IsMouseButtonDown("LeftButton") then
+                    m:Hide()
+                end
+            end)
+            menu:SetScript("OnHide", function(m)
+                m:SetScript("OnUpdate", nil)
+            end)
+            menu:Show()
+        end
+
         local function CreatePreviewSlot(idx)
             local slot = CreateFrame("Button", nil, pf)
             slot:SetSize(1, 1)
@@ -6405,6 +6535,16 @@ initFrame:SetScript("OnEvent", function(self)
                 end
                 local bd = SelectedCDMBar()
                 if not bd then return end
+                -- Divider slot: middle-click removes, right-click shows context menu
+                if self._isDivider then
+                    if button == "MiddleButton" then
+                        ns.RemoveDivider(bd.key, self._slotIdx)
+                        RefreshCDPreview()
+                    elseif button == "RightButton" or button == "LeftButton" then
+                        ShowDividerContextMenu(self, bd.key, self._slotIdx)
+                    end
+                    return
+                end
                 -- Buff bars: same remove flow as CD/utility via ghost bar
                 if bd.barType == "buffs" or bd.key == "buffs" then
                     local sid = self._previewSpellID
@@ -6997,30 +7137,39 @@ initFrame:SetScript("OnEvent", function(self)
                     -- Spell slot
                     local id = tracked[i]
                     slot._previewSpellID = nil  -- reset each update
-                    if id then
-                        local tex
-                        if id <= -100 then
-                            -- On-use bag item: negated itemID
-                            tex = C_Item.GetItemIconByID(-id)
-                        elseif id < 0 then
-                            -- Trinket slot: get icon from equipped item
-                            local itemID = GetInventoryItemID("player", -id)
-                            tex = itemID and C_Item.GetItemIconByID(itemID) or nil
-                        else
-                            tex = C_Spell.GetSpellTexture(id)
-                            slot._previewSpellID = id
-                        end
-                        if tex then
-                            slot._icon:SetTexture(tex)
-                            slot._icon:SetTexCoord(zoom, 1 - zoom, zoom, 1 - zoom)
-                            slot._icon:SetDesaturated(false)
-                            slot._icon:SetAlpha(1)
+                    local isDivider = (id == ns.CDM_DIVIDER_ID)
+                    slot._isDivider = isDivider
+                    if isDivider then
+                        -- Render dividers as faint grey placeholders
+                        slot._icon:SetTexture(nil)
+                        slot._bg:SetColorTexture(0.3, 0.3, 0.3, 0.25)
+                    else
+                        if id then
+                            local tex
+                            if id <= -100 then
+                                -- On-use bag item: negated itemID
+                                tex = C_Item.GetItemIconByID(-id)
+                            elseif id < 0 then
+                                -- Trinket slot: get icon from equipped item
+                                local itemID = GetInventoryItemID("player", -id)
+                                tex = itemID and C_Item.GetItemIconByID(itemID) or nil
+                            else
+                                tex = C_Spell.GetSpellTexture(id)
+                                slot._previewSpellID = id
+                            end
+                            if tex then
+                                slot._icon:SetTexture(tex)
+                                slot._icon:SetTexCoord(zoom, 1 - zoom, zoom, 1 - zoom)
+                                slot._icon:SetDesaturated(false)
+                                slot._icon:SetAlpha(1)
+                            else slot._icon:SetTexture(nil) end
                         else slot._icon:SetTexture(nil) end
-                    else slot._icon:SetTexture(nil) end
+                    end
                 else
                     -- Blank slot (empty grid filler)
                     slot._icon:SetTexture(nil)
                     slot._previewSpellID = nil
+                    slot._isDivider = false
                 end
 
                 local bSz = bd.borderSize or 1
@@ -7033,7 +7182,9 @@ initFrame:SetScript("OnEvent", function(self)
                     PP.SetBorderColor(slot, bR, bG, bB, 1)
                     PP.SetBorderSize(slot, bSz)
                 end
-                slot._bg:SetColorTexture(bd.bgR or 0.08, bd.bgG or 0.08, bd.bgB or 0.08, bd.bgA or 0.6)
+                if not slot._isDivider then
+                    slot._bg:SetColorTexture(bd.bgR or 0.08, bd.bgG or 0.08, bd.bgB or 0.08, bd.bgA or 0.6)
+                end
                 if slot._bg.SetSnapToPixelGrid then slot._bg:SetSnapToPixelGrid(false); slot._bg:SetTexelSnappingBias(0) end
 
                 ns.ApplyShapeToCDMIcon(slot, shape, bd)

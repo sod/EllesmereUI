@@ -574,6 +574,10 @@ function ns.RemoveTrackedSpell(barKey, idx)
     if not sd then return false end
     local list = sd.assignedSpells
     if not list or idx < 1 or idx > #list then return false end
+    -- Guard: dividers are not tracked spells; delegate to RemoveDivider instead.
+    if list[idx] == ns.CDM_DIVIDER_ID then
+        return ns.RemoveDivider(barKey, idx) or false
+    end
     -- Prevent emptying default bars (cooldowns/utility)
     if (barKey == "cooldowns" or barKey == "utility") and #list <= 1 then
         print("|cffff6060[EllesmereUI CDM]|r Cannot remove the last spell from a default bar.")
@@ -802,4 +806,22 @@ function ns.IsBuffSpellHidden(spellID)
         if sid == spellID then return true end
     end
     return false
+end
+
+-- Insert a visual space divider before position `beforeIdx` in assignedSpells.
+function ns.InsertDivider(barKey, beforeIdx)
+    local sd = ns.GetBarSpellData(barKey)
+    if not sd or not sd.assignedSpells then return end
+    table.insert(sd.assignedSpells, beforeIdx, ns.CDM_DIVIDER_ID)
+    if ns.FullCDMRebuild then ns.FullCDMRebuild("divider_insert") end
+end
+
+-- Remove a divider at index `idx` (no-op if the entry is not a divider).
+function ns.RemoveDivider(barKey, idx)
+    local sd = ns.GetBarSpellData(barKey)
+    if not sd or not sd.assignedSpells then return end
+    if sd.assignedSpells[idx] == ns.CDM_DIVIDER_ID then
+        table.remove(sd.assignedSpells, idx)
+        if ns.FullCDMRebuild then ns.FullCDMRebuild("divider_remove") end
+    end
 end

@@ -21,6 +21,7 @@ local floor = math.floor
 local GetTime = GetTime
 
 ns.DEFAULT_MAPPING_NAME = "Buff Name (eg: Divine Purpose)"
+ns.CDM_DIVIDER_ID = -1  -- Sentinel value for visual space dividers in CDM bars
 
 local RECONCILE = {
     readyDelay = 2,
@@ -2321,6 +2322,7 @@ local function CountCDMBarSpells(barKey)
     local sd = ns.GetBarSpellData(barKey)
     if not sd or not sd.assignedSpells then return 0 end
     for _, sid in ipairs(sd.assignedSpells) do
+        -- Counts dividers (CDM_DIVIDER_ID = -1) too: they occupy one visual slot.
         if sid and sid ~= 0 then count = count + 1 end
     end
     return count
@@ -2368,6 +2370,24 @@ end
 -------------------------------------------------------------------------------
 --  Layout icons within a CDM bar
 -------------------------------------------------------------------------------
+-- Build a table mapping icon index → number of dividers that precede it in
+-- assignedSpells.  Used by LayoutCDMBar to shift icon columns past empty slots.
+local function BuildDividerOffsets(barKey)
+    local sd = ns.GetBarSpellData(barKey)
+    local spells = sd and sd.assignedSpells
+    if not spells then return {}, 0 end
+    local offsets, iconIdx, divCount = {}, 0, 0
+    for _, sid in ipairs(spells) do
+        if sid == ns.CDM_DIVIDER_ID then
+            divCount = divCount + 1
+        elseif sid and sid ~= 0 then
+            iconIdx = iconIdx + 1
+            offsets[iconIdx] = divCount  -- dividers before this icon
+        end
+    end
+    return offsets, divCount
+end
+
 LayoutCDMBar = function(barKey)
     local frame = cdmBarFrames[barKey]
     local icons = cdmBarIcons[barKey]
@@ -2427,6 +2447,8 @@ LayoutCDMBar = function(barKey)
                     local tf = ns._trinketFrames and ns._trinketFrames[slot]
                     local hasItem = GetInventoryItemID("player", slot) ~= nil
                     if hasItem and tf and tf._trinketIsOnUse then visibleAssigned = visibleAssigned + 1 end
+                elseif sid == ns.CDM_DIVIDER_ID then
+                    visibleAssigned = visibleAssigned + 1  -- dividers occupy one visual slot
                 elseif sid and sid ~= 0 then
                     visibleAssigned = visibleAssigned + 1
                 end
@@ -2453,6 +2475,7 @@ LayoutCDMBar = function(barKey)
 
     -- Bar has visible icons -- ensure it is visible (unless visibility is "never")
     local stride, _, customTopCount = ComputeTopRowStride(barData, sizeCount)
+    local dividerOffsets = BuildDividerOffsets(barKey)
 
     -- Container size (already snapped values)
     local totalW, totalH
@@ -2526,12 +2549,13 @@ LayoutCDMBar = function(barKey)
         -- Map sequential index to bottom-up grid position.
         -- Icon 1..topRowCount fill the top row (visual row 0).
         -- Remaining icons fill rows 1..numRows-1 (bottom rows).
+        -- dividerOffsets[i] shifts each icon right by the number of dividers before it.
         local col, row
         if i <= topRowCount then
-            col = i - 1
+            col = (i - 1) + (dividerOffsets[i] or 0)
             row = 0
         else
-            local bottomIdx = i - topRowCount - 1
+            local bottomIdx = (i - topRowCount - 1) + (dividerOffsets[i] or 0)
             col = bottomIdx % stride
             row = 1 + math.floor(bottomIdx / stride)
         end

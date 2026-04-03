@@ -1329,7 +1329,7 @@ local function CollectAndReanchor(bypassSpecGuard)
                 if spellList then
                     local idx = 0
                     for _, sid in ipairs(spellList) do
-                        if sid and sid ~= 0 then
+                        if sid and sid ~= 0 and sid ~= ns.CDM_DIVIDER_ID then
                             idx = idx + 1
                             spellOrder[sid] = idx
                         end
