@@ -7029,25 +7029,46 @@ initFrame:SetScript("OnEvent", function(self)
             self._numRows = numRows
             self._gridSlots = gridSlots
 
-            -- Count dividers and compute fractional visual stride for container sizing.
             -- divWFrac: fraction of one (iconSize + spacing) step each divider occupies.
-            local numDividers = 0
-            for i = 1, count do
-                if tracked[i] == ns.CDM_DIVIDER_ID then numDividers = numDividers + 1 end
-            end
             local divWFrac = (not isBuffBar and not isCustomBuffBar) and (bd.dividerWidth or 0.5) or 0
-            -- visualStride replaces each integer divider slot with its real fractional width.
-            local visualStride = stride - numDividers * (1 - divWFrac)
+            -- visualStride: max visual slot width across all rows (per-row divider widths respected).
+            local visualStride
+            do
+                local rowVisW = {}
+                for i = 1, count do
+                    local row
+                    if i <= topRowCount then
+                        row = 0
+                    elseif stride > 0 then
+                        row = 1 + math.floor((i - topRowCount - 1) / stride)
+                    else
+                        row = 1
+                    end
+                    rowVisW[row] = (rowVisW[row] or 0) + (tracked[i] == ns.CDM_DIVIDER_ID and divWFrac or 1)
+                end
+                local maxW = 0
+                for _, w in pairs(rowVisW) do if w > maxW then maxW = w end end
+                visualStride = maxW > 0 and maxW or stride
+            end
 
-            -- Per-slot fractional col adjustment: each preceding divider shifts
-            -- subsequent slots left by (1 - divWFrac) steps relative to integer grid.
+            -- Per-slot fractional col adjustment: accumulates per row so top-row dividers
+            -- do not bleed into the column offsets of bottom-row slots.
             local slotColAdj = {}
             do
-                local accum = 0
+                local rowAccum = {}
                 for i = 1, math.min(gridSlots, MAX_PREVIEW_ICONS) do
-                    slotColAdj[i] = accum
+                    local row
+                    if i <= topRowCount then
+                        row = 0
+                    elseif stride > 0 then
+                        row = 1 + math.floor((i - topRowCount - 1) / stride)
+                    else
+                        row = 1
+                    end
+                    if not rowAccum[row] then rowAccum[row] = 0 end
+                    slotColAdj[i] = rowAccum[row]
                     if i <= count and tracked[i] == ns.CDM_DIVIDER_ID then
-                        accum = accum + (divWFrac - 1)
+                        rowAccum[row] = rowAccum[row] + (divWFrac - 1)
                     end
                 end
             end

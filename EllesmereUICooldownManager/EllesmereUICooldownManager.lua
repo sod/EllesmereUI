@@ -2370,27 +2370,72 @@ end
 -------------------------------------------------------------------------------
 --  Layout icons within a CDM bar
 -------------------------------------------------------------------------------
--- Build a table mapping icon index → accumulated fractional step offset from
--- preceding dividers.  dividerWidth (0.0–1.0) is stored in barData and controls
--- how wide each divider is as a fraction of one (iconSize + spacing) step.
--- Returns: offsets table, integer divider count, total fractional step width.
-local function BuildDividerOffsets(barKey)
+-- Build per-icon divider layout data for a CDM bar.
+-- intCustomTopCount: top-row assignment slot count (including dividers) from ComputeTopRowStride.
+-- intStride: bottom-row slot width from ComputeTopRowStride.
+-- Returns:
+--   offsets       iconIdx → accumulated fractional offset from same-row preceding dividers only
+--   iconPosInRow  iconIdx → 0-based visual position within its row (excluding divider slots)
+--   iconRowMap    iconIdx → which grid row (0 = top row)
+--   rowIconCounts row → count of real icons on that row
+--   maxVisW       max visual slot width across all rows (for container sizing)
+local function BuildDividerOffsets(barKey, intCustomTopCount, intStride)
     local sd = ns.GetBarSpellData(barKey)
     local spells = sd and sd.assignedSpells
-    if not spells then return {}, 0, 0 end
+    if not spells then return {}, {}, {}, {}, 0 end
     local barData = barDataByKey[barKey]
     local divW = (barData and barData.dividerWidth) or 0.5
-    local offsets, iconIdx, divCount, accumFrac = {}, 0, 0, 0
+
+    local offsets, iconPosInRow, iconRowMap, rowIconCounts = {}, {}, {}, {}
+    local maxVisW = 0
+    local iconIdx = 0
+    local slotIdx = 0
+    local currentRow = -1
+    local rowFrac = 0
+    local rowIconCount = 0
+
     for _, sid in ipairs(spells) do
+        slotIdx = slotIdx + 1
+        -- Determine which grid row this assignment slot belongs to.
+        local row
+        if slotIdx <= intCustomTopCount then
+            row = 0
+        elseif intStride > 0 then
+            row = 1 + math.floor((slotIdx - intCustomTopCount - 1) / intStride)
+        else
+            row = 1
+        end
+
+        -- Entering a new row: finalise previous row's visual width and reset accumulators.
+        if row ~= currentRow then
+            if currentRow >= 0 then
+                local visW = rowIconCount + rowFrac
+                if visW > maxVisW then maxVisW = visW end
+            end
+            currentRow = row
+            rowFrac = 0
+            rowIconCount = 0
+        end
+
         if sid == ns.CDM_DIVIDER_ID then
-            divCount  = divCount  + 1
-            accumFrac = accumFrac + divW
+            rowFrac = rowFrac + divW
         elseif sid and sid ~= 0 then
             iconIdx = iconIdx + 1
-            offsets[iconIdx] = accumFrac  -- fractional step offset before this icon
+            offsets[iconIdx] = rowFrac
+            iconPosInRow[iconIdx] = rowIconCount
+            iconRowMap[iconIdx] = row
+            rowIconCounts[row] = (rowIconCounts[row] or 0) + 1
+            rowIconCount = rowIconCount + 1
         end
     end
-    return offsets, divCount, accumFrac
+
+    -- Finalise the last row.
+    if currentRow >= 0 then
+        local visW = rowIconCount + rowFrac
+        if visW > maxVisW then maxVisW = visW end
+    end
+
+    return offsets, iconPosInRow, iconRowMap, rowIconCounts, maxVisW
 end
 
 LayoutCDMBar = function(barKey)
@@ -2479,11 +2524,11 @@ LayoutCDMBar = function(barKey)
     end
 
     -- Bar has visible icons -- ensure it is visible (unless visibility is "never")
-    local stride, _, customTopCount = ComputeTopRowStride(barData, sizeCount)
-    local dividerOffsets, totalDividers, totalFrac = BuildDividerOffsets(barKey)
-    -- visualStride corrects integer stride for fractional divider widths:
-    -- each integer-counted divider slot is replaced by its actual fraction.
-    local visualStride = stride - totalDividers + totalFrac
+    local stride, _, intCustomTopCount = ComputeTopRowStride(barData, sizeCount)
+    local divOfs, iconPosInRow, iconRowMap, rowIconCounts, maxVisW =
+        BuildDividerOffsets(barKey, intCustomTopCount, stride)
+    -- visualStride: max visual slot width across all rows, accounting for fractional dividers.
+    local visualStride = maxVisW > 0 and maxVisW or stride
 
     -- Container size (already snapped values)
     local totalW, totalH
@@ -2517,16 +2562,9 @@ LayoutCDMBar = function(barKey)
     local stepW = iconW + spacing
     local stepH = iconH + spacing
 
-    -- How many icons on the top row
-    local topRowCount = customTopCount
-    if topRowCount < 0 then topRowCount = 0 end
-    local bottomRowCount = #visibleIcons - topRowCount
-    if bottomRowCount < 0 then bottomRowCount = 0 end
-
-    -- Compute per-row centering offset (icons fewer than stride get centered)
+    -- Per-row real icon counts (from BuildDividerOffsets; used for centering).
     local function RowIconCount(row)
-        if row == 0 then return topRowCount end
-        return bottomRowCount
+        return rowIconCounts[row] or 0
     end
 
     -- Elevate icon strata for cursor-anchored bars (icons aren't parented
@@ -2554,19 +2592,12 @@ LayoutCDMBar = function(barKey)
         end
         icon:ClearAllPoints()
 
-        -- Map sequential index to bottom-up grid position.
-        -- Icon 1..topRowCount fill the top row (visual row 0).
-        -- Remaining icons fill rows 1..numRows-1 (bottom rows).
-        -- dividerOffsets[i] shifts each icon right by the number of dividers before it.
-        local col, row
-        if i <= topRowCount then
-            col = (i - 1) + (dividerOffsets[i] or 0)
-            row = 0
-        else
-            local bottomIdx = (i - topRowCount - 1) + (dividerOffsets[i] or 0)
-            col = bottomIdx % stride
-            row = 1 + math.floor(bottomIdx / stride)
-        end
+        -- Map icon index to grid position using per-row divider data.
+        -- iconRowMap[i] is the row determined from assignedSpells slot positions.
+        -- iconPosInRow[i] is the 0-based icon count within that row (dividers excluded).
+        -- divOfs[i] is the accumulated fractional offset from same-row preceding dividers.
+        local col = (iconPosInRow[i] or (i - 1)) + (divOfs[i] or 0)
+        local row = iconRowMap[i] or 0
 
         -- Center any row that has fewer icons than stride
         local rowCount = RowIconCount(row)
