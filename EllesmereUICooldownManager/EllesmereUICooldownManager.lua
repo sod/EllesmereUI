@@ -2370,22 +2370,27 @@ end
 -------------------------------------------------------------------------------
 --  Layout icons within a CDM bar
 -------------------------------------------------------------------------------
--- Build a table mapping icon index → number of dividers that precede it in
--- assignedSpells.  Used by LayoutCDMBar to shift icon columns past empty slots.
+-- Build a table mapping icon index → accumulated fractional step offset from
+-- preceding dividers.  dividerWidth (0.0–1.0) is stored in barData and controls
+-- how wide each divider is as a fraction of one (iconSize + spacing) step.
+-- Returns: offsets table, integer divider count, total fractional step width.
 local function BuildDividerOffsets(barKey)
     local sd = ns.GetBarSpellData(barKey)
     local spells = sd and sd.assignedSpells
-    if not spells then return {}, 0 end
-    local offsets, iconIdx, divCount = {}, 0, 0
+    if not spells then return {}, 0, 0 end
+    local barData = barDataByKey[barKey]
+    local divW = (barData and barData.dividerWidth) or 0.5
+    local offsets, iconIdx, divCount, accumFrac = {}, 0, 0, 0
     for _, sid in ipairs(spells) do
         if sid == ns.CDM_DIVIDER_ID then
-            divCount = divCount + 1
+            divCount  = divCount  + 1
+            accumFrac = accumFrac + divW
         elseif sid and sid ~= 0 then
             iconIdx = iconIdx + 1
-            offsets[iconIdx] = divCount  -- dividers before this icon
+            offsets[iconIdx] = accumFrac  -- fractional step offset before this icon
         end
     end
-    return offsets, divCount
+    return offsets, divCount, accumFrac
 end
 
 LayoutCDMBar = function(barKey)
@@ -2475,16 +2480,19 @@ LayoutCDMBar = function(barKey)
 
     -- Bar has visible icons -- ensure it is visible (unless visibility is "never")
     local stride, _, customTopCount = ComputeTopRowStride(barData, sizeCount)
-    local dividerOffsets = BuildDividerOffsets(barKey)
+    local dividerOffsets, totalDividers, totalFrac = BuildDividerOffsets(barKey)
+    -- visualStride corrects integer stride for fractional divider widths:
+    -- each integer-counted divider slot is replaced by its actual fraction.
+    local visualStride = stride - totalDividers + totalFrac
 
     -- Container size (already snapped values)
     local totalW, totalH
     if isHoriz then
-        totalW = stride * iconW + (stride - 1) * spacing
+        totalW = visualStride * iconW + math.max(0, visualStride - 1) * spacing
         totalH = numRows * iconH + (numRows - 1) * spacing
     else
         totalW = numRows * iconW + (numRows - 1) * spacing
-        totalH = stride * iconH + (stride - 1) * spacing
+        totalH = visualStride * iconH + math.max(0, visualStride - 1) * spacing
     end
 
     -- Just resize the container. Never re-anchor, save position, or

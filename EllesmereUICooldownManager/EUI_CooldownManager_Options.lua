@@ -7029,6 +7029,29 @@ initFrame:SetScript("OnEvent", function(self)
             self._numRows = numRows
             self._gridSlots = gridSlots
 
+            -- Count dividers and compute fractional visual stride for container sizing.
+            -- divWFrac: fraction of one (iconSize + spacing) step each divider occupies.
+            local numDividers = 0
+            for i = 1, count do
+                if tracked[i] == ns.CDM_DIVIDER_ID then numDividers = numDividers + 1 end
+            end
+            local divWFrac = (not isBuffBar and not isCustomBuffBar) and (bd.dividerWidth or 0.5) or 0
+            -- visualStride replaces each integer divider slot with its real fractional width.
+            local visualStride = stride - numDividers * (1 - divWFrac)
+
+            -- Per-slot fractional col adjustment: each preceding divider shifts
+            -- subsequent slots left by (1 - divWFrac) steps relative to integer grid.
+            local slotColAdj = {}
+            do
+                local accum = 0
+                for i = 1, math.min(gridSlots, MAX_PREVIEW_ICONS) do
+                    slotColAdj[i] = accum
+                    if i <= count and tracked[i] == ns.CDM_DIVIDER_ID then
+                        accum = accum + (divWFrac - 1)
+                    end
+                end
+            end
+
             local bottomRowCount = count - topRowCount
             if bottomRowCount < 0 then bottomRowCount = 0 end
 
@@ -7038,16 +7061,16 @@ initFrame:SetScript("OnEvent", function(self)
                 return bottomRowCount
             end
 
-            -- Total dimensions: spell grid + 1 extra slot for the "+" button
+            -- Total dimensions: spell grid + 1 extra slot for the "+" button.
+            -- Uses visualStride so fractional dividers are reflected in the container size.
             local isVert = (grow == "DOWN" or grow == "UP")
             local totalW, totalH
             if isVert then
                 local totalCols = numRows + 1
                 totalW = (totalCols * iconSize) + ((totalCols - 1) * spacing)
-                totalH = (stride * iconH) + ((stride - 1) * spacing)
+                totalH = math.floor(visualStride * iconH + math.max(0, visualStride - 1) * spacing + 0.5)
             else
-                local totalCols = stride + 1
-                totalW = (totalCols * iconSize) + ((totalCols - 1) * spacing)
+                totalW = math.floor((visualStride + 1) * iconSize + visualStride * spacing + 0.5)
                 totalH = (numRows * iconH) + ((numRows - 1) * spacing)
             end
 
@@ -7121,17 +7144,23 @@ initFrame:SetScript("OnEvent", function(self)
                 local slot = previewSlots[i]
                 slot._slotIdx = i
 
-                -- Map sequential index to bottom-up grid position
+                -- Map sequential index to grid position.
+                -- slotColAdj shifts each slot left by the fractional shortfall of preceding dividers.
                 local col, row
+                local isThisDivider = (i <= count and tracked[i] == ns.CDM_DIVIDER_ID)
                 if i <= topRowCount then
-                    col = i - 1
+                    col = (i - 1) + (slotColAdj[i] or 0)
                     row = 0
                 else
                     local bottomIdx = i - topRowCount - 1
-                    col = bottomIdx % stride
+                    col = (bottomIdx % stride) + (slotColAdj[i] or 0)
                     row = 1 + math.floor(bottomIdx / stride)
                 end
                 PosAtGrid(slot, col, row)
+                -- PosAtGrid sets width = iconSize; dividers get their fractional width instead.
+                if isThisDivider then
+                    PP.Size(slot, math.max(2, math.floor(divWFrac * iconSize + 0.5)), iconH)
+                end
 
                 if i <= count then
                     -- Spell slot
@@ -7294,7 +7323,7 @@ initFrame:SetScript("OnEvent", function(self)
                 if grow == "LEFT" then
                     addPx = startX - (iconSize + spacing)
                 else
-                    addPx = startX + stride * (iconSize + spacing)
+                    addPx = math.floor(startX + visualStride * (iconSize + spacing) + 0.5)
                 end
                 addPy = startY - lastRow * (iconH + spacing)
             end
@@ -7306,13 +7335,14 @@ initFrame:SetScript("OnEvent", function(self)
             addLbl:SetTextColor(ar, ag, ab, 0.6)
             addBtn:Show()
 
-            -- Bar background covers spell grid only (not the + column)
+            -- Bar background covers spell grid only (not the + column).
+            -- Uses visualStride so fractional dividers are reflected correctly.
             local spellW, spellH
             if isVert then
                 spellW = (numRows * iconSize) + ((numRows - 1) * spacing)
-                spellH = (stride * iconH) + ((stride - 1) * spacing)
+                spellH = math.floor(visualStride * iconH + math.max(0, visualStride - 1) * spacing + 0.5)
             else
-                spellW = (stride * iconSize) + ((stride - 1) * spacing)
+                spellW = math.floor(visualStride * iconSize + math.max(0, visualStride - 1) * spacing + 0.5)
                 spellH = totalH
             end
             if bd.barBgEnabled then
@@ -8325,6 +8355,17 @@ initFrame:SetScript("OnEvent", function(self)
                 ns.BuildAllCDMBars(); Refresh(); UpdateCDMPreviewAndResize(); EllesmereUI:RefreshPage()
             end,
         })
+
+        -- Divider Width slider (only relevant when the bar has dividers, shown always for discoverability)
+        _, h = W:DualRow(parent, y,
+            { type="slider", text="Divider Width",
+              min=0.1, max=1.0, step=0.1,
+              getValue=function() return BD().dividerWidth or 0.5 end,
+              setValue=function(v)
+                  BD().dividerWidth = v
+                  ns.BuildAllCDMBars(); Refresh(); UpdateCDMPreviewAndResize()
+              end },
+            { type="label", text="" });  y = y - h
         end -- isBuffBar else
 
         -- Row 2: (Sync) Border Size (swatch) | empty (active anim is now per-icon)
