@@ -7204,9 +7204,29 @@ initFrame:SetScript("OnEvent", function(self)
             trackFrame:SetPoint("RIGHT", valBox, "LEFT", -10, 0)
             popup._refreshSlider = refreshSlider
 
+            local removeBtn = CreateFrame("Button", nil, popup)
+            removeBtn:SetSize(110, 28)
+            removeBtn:SetPoint("BOTTOMLEFT", popup, "BOTTOM", 4, 16)
+            local rBg = removeBtn:CreateTexture(nil, "BACKGROUND")
+            rBg:SetAllPoints(); rBg:SetColorTexture(0.35, 0.10, 0.10, 0.6)
+            EllesmereUI.MakeBorder(removeBtn, 0.9, 0.3, 0.3, 0.35, EllesmereUI.PP)
+            local rLbl = removeBtn:CreateFontString(nil, "OVERLAY")
+            rLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
+            rLbl:SetPoint("CENTER"); rLbl:SetText(EllesmereUI.L("Remove Spacer"))
+            rLbl:SetTextColor(1, 0.55, 0.55, 0.9)
+            removeBtn:SetScript("OnEnter", function() rLbl:SetTextColor(1, 1, 1, 1) end)
+            removeBtn:SetScript("OnLeave", function() rLbl:SetTextColor(1, 0.55, 0.55, 0.9) end)
+            removeBtn:SetScript("OnClick", function()
+                if ns.RemoveSpacerFromBar and popup._barKey and popup._spacerId then
+                    ns.RemoveSpacerFromBar(popup._barKey, popup._spacerId)
+                    RefreshCDPreview()
+                end
+                dimmer:Hide()
+            end)
+
             local closeBtn = CreateFrame("Button", nil, popup)
             closeBtn:SetSize(90, 28)
-            closeBtn:SetPoint("BOTTOM", popup, "BOTTOM", 0, 16)
+            closeBtn:SetPoint("BOTTOMRIGHT", popup, "BOTTOM", -4, 16)
             local cBg = closeBtn:CreateTexture(nil, "BACKGROUND")
             cBg:SetAllPoints(); cBg:SetColorTexture(0.12, 0.12, 0.12, 0.5)
             EllesmereUI.MakeBorder(closeBtn, 1, 1, 1, 0.10, EllesmereUI.PP)
@@ -15399,6 +15419,13 @@ initFrame:SetScript("OnEvent", function(self)
                         PP.Point(slot, "TOPLEFT", self, "TOPLEFT", L.x, L.y)
                         slot._baseX = L.x; slot._baseY = L.y; slot._slotW = L.w
                         isSpacerSlot = (spSlotId ~= nil)
+                        -- A spacer is often thin and wedged between two icons whose expanded
+                        -- hit-rects overlap it. Raise it above the icon slots and give it a
+                        -- generous hit-rect so left/right/middle-clicks reliably land on it.
+                        if isSpacerSlot then
+                            slot:SetFrameLevel(pf:GetFrameLevel() + 30)
+                            slot:SetHitRectInsets(-3, -3, -8, -8)
+                        end
                     else
                         -- Dropped spacer (leading/row-boundary/trailing): render nothing.
                         slot._baseX = nil; slot._slotW = 0
@@ -15420,6 +15447,9 @@ initFrame:SetScript("OnEvent", function(self)
                     slot._slotW = iconSize
                     slot._isSpacer = nil
                     slot._spacerId = nil
+                    -- Reset level/hit-rect in case this pooled slot was a spacer last pass.
+                    slot:SetFrameLevel(pf:GetFrameLevel() + 1)
+                    slot:SetHitRectInsets(-6, -6, -6, -6)
                 end
 
               if isSpacerSlot then
