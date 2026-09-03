@@ -4272,6 +4272,9 @@ LayoutCDMBar = function(barKey)
             -- Immediate spacer coord-width / count directly before each real-icon ordinal.
             -- Ordinal counting skips spacers, matching the reanchor sort loop, so it lines
             -- up with fc.sortOrder (an integer for a real assigned icon).
+            -- Spacer GROUP sitting immediately before each real-icon ordinal (ordinals count
+            -- real entries only, matching the reanchor sort loop / fc.sortOrder). A trailing
+            -- group (after the last real icon) is left in pend and dropped.
             local rawW, rawN = {}, {}
             local ordN, pendW, pendN = 0, 0, 0
             for _, e in ipairs(sdSp.assignedSpells) do
@@ -4287,43 +4290,57 @@ LayoutCDMBar = function(barKey)
                     end
                 end
             end
-            -- Leftover = trailing spacers (after the last real icon): pure end padding.
-            local trailW, trailN = pendW, pendN
-            if next(rawW) or trailW > 0 then
-                hasSpacers = true
-                spacerGapPx = {}
-                local spacerRowGapPx = {}
-                local sStride, _sRows, sTop = ComputeTopRowStride(barData, #icons)
-                local physSp = math.floor(spacing / onePx + 0.5)
-                for i = 1, #icons do
-                    local col, row
-                    if i <= sTop then
-                        col = i - 1; row = 0
-                    else
-                        local b = i - sTop - 1
-                        col = b % sStride; row = 1 + math.floor(b / sStride)
+            if next(rawW) then
+                -- Visibility-aware mapping. icons is ascending by sortOrder (integer sortOrder
+                -- = a real assigned icon; some ordinals may be absent when a spell is untalented
+                -- or shift-hidden this pass). A spacer group before ordinal ordN maps to the
+                -- FIRST visible icon at ordinal >= ordN, but ONLY if a visible icon precedes it
+                -- (p >= 2). So a gap appears only BETWEEN two visible icons, never at the bar's
+                -- start/end, and it follows to the next visible icon when the icon immediately
+                -- to its right is missing in-game. Groups separated only by absent icons merge.
+                local nVis = #icons
+                local gapAtPos = {}
+                for ordN2, w in pairs(rawW) do
+                    local p
+                    for pos = 1, nVis do
+                        local fcv = _ecmeFC[icons[pos]]
+                        local so = fcv and fcv.sortOrder
+                        if type(so) == "number" and so == math.floor(so) and so >= ordN2 then
+                            p = pos; break
+                        end
                     end
-                    -- Gap directly before this icon (leading pad when col==0). The sortOrder
-                    -- integer test drops spillover frames (fractional sortOrder) so a real
-                    -- icon's gap is never double-applied.
-                    local g = 0
-                    local fcSp = _ecmeFC[icons[i]]
-                    local so = fcSp and fcSp.sortOrder
-                    if type(so) == "number" and so == math.floor(so) and rawW[so] then
-                        g = math.floor(rawW[so] / onePx + 0.5) + (rawN[so] or 0) * physSp
+                    if p and p >= 2 then
+                        local g = gapAtPos[p]
+                        if not g then g = { w = 0, n = 0 }; gapAtPos[p] = g end
+                        g.w = g.w + w; g.n = g.n + (rawN[ordN2] or 0)
                     end
-                    spacerGapPx[i] = g
-                    spacerRowGapPx[row] = (spacerRowGapPx[row] or 0) + g
                 end
-                -- Trailing pad grows the last row (the container), shifting no icon.
-                local trailPx = (trailW > 0) and (math.floor(trailW / onePx + 0.5) + trailN * physSp) or 0
-                if trailPx > 0 then
-                    local lastRow = select(2, ComputeTopRowStride(barData, #icons)) - 1
-                    if lastRow < 0 then lastRow = 0 end
-                    spacerRowGapPx[lastRow] = (spacerRowGapPx[lastRow] or 0) + trailPx
-                end
-                for _, v in pairs(spacerRowGapPx) do
-                    if v > spacerGrowthPx then spacerGrowthPx = v end
+                if next(gapAtPos) then
+                    hasSpacers = true
+                    spacerGapPx = {}
+                    local spacerRowGapPx = {}
+                    local sStride, _sRows, sTop = ComputeTopRowStride(barData, nVis)
+                    local physSp = math.floor(spacing / onePx + 0.5)
+                    for i = 1, nVis do
+                        local col, row
+                        if i <= sTop then
+                            col = i - 1; row = 0
+                        else
+                            local b = i - sTop - 1
+                            col = b % sStride; row = 1 + math.floor(b / sStride)
+                        end
+                        -- col>0 drops a gap that would land at a multi-row wrap boundary.
+                        local g = 0
+                        local grp = gapAtPos[i]
+                        if grp and col > 0 then
+                            g = math.floor(grp.w / onePx + 0.5) + grp.n * physSp
+                        end
+                        spacerGapPx[i] = g
+                        spacerRowGapPx[row] = (spacerRowGapPx[row] or 0) + g
+                    end
+                    for _, v in pairs(spacerRowGapPx) do
+                        if v > spacerGrowthPx then spacerGrowthPx = v end
+                    end
                 end
             end
         end

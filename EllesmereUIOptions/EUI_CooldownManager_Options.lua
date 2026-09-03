@@ -14440,14 +14440,21 @@ initFrame:SetScript("OnEvent", function(self)
                 local isDefaultBuffs = (bd.key == "buffs")
 
                 -- Spacer slot: middle-click removes it, right/left-click edits its width.
-                -- No per-spell settings apply.
-                if self._isSpacer and self._spacerId then
+                -- Detect straight from assignedSpells[slotIdx] (CD/util slot index == data
+                -- index) so it works even if the render-time _isSpacer flag is stale.
+                local sidAtSlot
+                do
+                    local sdSlot = not isDefaultBuffs and ns.GetBarSpellData(bd.key)
+                    sidAtSlot = sdSlot and sdSlot.assignedSpells and sdSlot.assignedSpells[self._slotIdx]
+                end
+                local clickSpacerId = self._spacerId or (sidAtSlot and ns.SpacerIdFromEntry(sidAtSlot))
+                if clickSpacerId then
                     if button == "MiddleButton" then
                         if _spellPickerMenu and _spellPickerMenu:IsShown() then _spellPickerMenu:Hide() end
-                        if ns.RemoveSpacerFromBar then ns.RemoveSpacerFromBar(bd.key, self._spacerId) end
+                        if ns.RemoveSpacerFromBar then ns.RemoveSpacerFromBar(bd.key, clickSpacerId) end
                         RefreshCDPreview()
                     else
-                        ShowSpacerWidthPopup(bd.key, self._spacerId)
+                        ShowSpacerWidthPopup(bd.key, clickSpacerId)
                     end
                     return
                 end
