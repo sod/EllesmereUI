@@ -1758,6 +1758,67 @@ function ns.AddTrackedSpell(barKey, id)
     return true
 end
 
+-- Add a spacer (an empty, configurable-width gap) to a cooldown/utility bar. Each spacer
+-- gets a per-bar id so its width and position stay independent even between equal-width
+-- spacers; the width lives in sd.spacerWidths[id]. Appended at the end -- the user then
+-- drags it into place. DELIBERATELY bypasses ns.AddTrackedSpell: its cross-bar family
+-- sweep removes the SAME numeric id from sibling bars (which would strip another bar's
+-- same-numbered spacer), and its variant dedup is spell-only. Returns the new id, or false.
+function ns.AddSpacerToBar(barKey, width)
+    local sd = ns.GetBarSpellData(barKey)
+    if not sd then return false end
+    if not sd.assignedSpells then sd.assignedSpells = {} end
+    if not sd.spacerWidths then sd.spacerWidths = {} end
+    local id = (sd.spacerNextId or 0) + 1
+    sd.spacerNextId = id
+    local w = tonumber(width) or ns.SPACER_DEFAULT_WIDTH
+    if w < 1 then w = 1 end
+    sd.spacerWidths[id] = w
+    sd.assignedSpells[#sd.assignedSpells + 1] = ns.SpacerMarker(id)
+    ns._spellOrderDirty = true
+    local frame = cdmBarFrames[barKey]
+    if frame then frame._blizzCache = nil; frame._prevVisibleCount = nil end
+    if ns.RebuildSpellRouteMap then ns.RebuildSpellRouteMap() end
+    if ns.QueueReanchor then ns.QueueReanchor() end
+    return id
+end
+
+-- Remove a spacer by id. Clears its stored width; the id counter stays monotonic so a
+-- later spacer never inherits a removed one's width.
+function ns.RemoveSpacerFromBar(barKey, spacerId)
+    local sd = ns.GetBarSpellData(barKey)
+    if not sd or not sd.assignedSpells then return false end
+    local marker = ns.SpacerMarker(spacerId)
+    local removed = false
+    for i = #sd.assignedSpells, 1, -1 do
+        if sd.assignedSpells[i] == marker then
+            table.remove(sd.assignedSpells, i)
+            removed = true
+        end
+    end
+    if sd.spacerWidths then sd.spacerWidths[spacerId] = nil end
+    if not removed then return false end
+    ns._spellOrderDirty = true
+    local frame = cdmBarFrames[barKey]
+    if frame then frame._blizzCache = nil; frame._prevVisibleCount = nil end
+    if ns.RebuildSpellRouteMap then ns.RebuildSpellRouteMap() end
+    if ns.QueueReanchor then ns.QueueReanchor() end
+    return true
+end
+
+-- Change a spacer's width in place (no reorder). The layout reads spacerWidths live, so a
+-- reanchor is all that's needed to update both the in-game bar and the preview.
+function ns.SetSpacerWidth(barKey, spacerId, width)
+    local sd = ns.GetBarSpellData(barKey)
+    if not sd or not sd.spacerWidths or sd.spacerWidths[spacerId] == nil then return false end
+    local w = tonumber(width) or ns.SPACER_DEFAULT_WIDTH
+    if w < 1 then w = 1 end
+    sd.spacerWidths[spacerId] = w
+    ns._spellOrderDirty = true
+    if ns.QueueReanchor then ns.QueueReanchor() end
+    return true
+end
+
 --- Track a single buff-viewer SLOT (cooldownID) on a buff-family bar.
 --- Collision escape hatch: two viewer slots can share one spellID, making
 --- AddTrackedSpell's variant dedup reject the second slot by sid. Claiming via

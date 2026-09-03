@@ -7139,6 +7139,97 @@ initFrame:SetScript("OnEvent", function(self)
     end
 
     ---------------------------------------------------------------------------
+    --  Spacer width popup. Edits a spacer's width (sd.spacerWidths[id]) with a
+    --  slider + numeric box; changes apply live to the preview and in-game.
+    ---------------------------------------------------------------------------
+    local function ShowSpacerWidthPopup(barKey, spacerId)
+        local popupName = "EUI_CDM_SpacerWidthPopup"
+        local popup = _G[popupName]
+        if not popup then
+            local POPUP_W, POPUP_H = 320, 140
+            local SL = EllesmereUI.SL or {}
+            local dimmer = CreateFrame("Frame", popupName .. "Dimmer", UIParent)
+            dimmer:SetFrameStrata("FULLSCREEN_DIALOG")
+            dimmer:SetAllPoints(UIParent)
+            dimmer:EnableMouse(true)
+            dimmer:Hide()
+            local dimTex = dimmer:CreateTexture(nil, "BACKGROUND")
+            dimTex:SetAllPoints(); dimTex:SetColorTexture(0, 0, 0, 0.25)
+            dimmer:SetScript("OnMouseDown", function(self) self:Hide() end)
+
+            popup = CreateFrame("Frame", popupName, dimmer)
+            popup:SetSize(POPUP_W, POPUP_H)
+            popup:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
+            popup:SetFrameStrata("FULLSCREEN_DIALOG")
+            popup:SetFrameLevel(dimmer:GetFrameLevel() + 10)
+            popup:EnableMouse(true)
+            local popBg = popup:CreateTexture(nil, "BACKGROUND")
+            popBg:SetAllPoints(); popBg:SetColorTexture(0.06, 0.08, 0.10, 1)
+            EllesmereUI.MakeBorder(popup, 1, 1, 1, 0.15, EllesmereUI.PP)
+
+            local title = popup:CreateFontString(nil, "OVERLAY")
+            title:SetFont(FONT_PATH, 14, GetCDMOptOutline())
+            title:SetPoint("TOP", popup, "TOP", 0, -18)
+            title:SetTextColor(1, 1, 1, 1)
+            title:SetText(EllesmereUI.L("Spacer Width"))
+
+            -- Coalesced live refresh so a slider drag doesn't rebuild the page per tick.
+            local function LiveRefresh()
+                if popup._pending then return end
+                popup._pending = true
+                C_Timer.After(0.03, function()
+                    popup._pending = false
+                    RefreshCDPreview()
+                end)
+            end
+
+            local trackFrame, valBox, refreshSlider = EllesmereUI.BuildSliderCore(
+                popup, 180, 4, 14, 46, 26, 13, SL.INPUT_A or 0.6,
+                1, 200, 1,
+                function()
+                    local sd = ns.GetBarSpellData(popup._barKey)
+                    return (sd and sd.spacerWidths and sd.spacerWidths[popup._spacerId])
+                        or ns.SPACER_DEFAULT_WIDTH
+                end,
+                function(v)
+                    if ns.SetSpacerWidth and popup._barKey and popup._spacerId then
+                        ns.SetSpacerWidth(popup._barKey, popup._spacerId, v)
+                        LiveRefresh()
+                    end
+                end,
+                true)
+            valBox:ClearAllPoints()
+            valBox:SetPoint("TOP", title, "BOTTOM", 60, -18)
+            trackFrame:ClearAllPoints()
+            trackFrame:SetPoint("RIGHT", valBox, "LEFT", -10, 0)
+            popup._refreshSlider = refreshSlider
+
+            local closeBtn = CreateFrame("Button", nil, popup)
+            closeBtn:SetSize(90, 28)
+            closeBtn:SetPoint("BOTTOM", popup, "BOTTOM", 0, 16)
+            local cBg = closeBtn:CreateTexture(nil, "BACKGROUND")
+            cBg:SetAllPoints(); cBg:SetColorTexture(0.12, 0.12, 0.12, 0.5)
+            EllesmereUI.MakeBorder(closeBtn, 1, 1, 1, 0.10, EllesmereUI.PP)
+            local cLbl = closeBtn:CreateFontString(nil, "OVERLAY")
+            cLbl:SetFont(FONT_PATH, 12, GetCDMOptOutline())
+            cLbl:SetPoint("CENTER"); cLbl:SetText(EllesmereUI.L("Close"))
+            cLbl:SetTextColor(0.7, 0.7, 0.7, 0.8)
+            closeBtn:SetScript("OnEnter", function() cLbl:SetTextColor(1, 1, 1, 1) end)
+            closeBtn:SetScript("OnLeave", function() cLbl:SetTextColor(0.7, 0.7, 0.7, 0.8) end)
+            closeBtn:SetScript("OnClick", function() dimmer:Hide() end)
+
+            popup._dimmer = dimmer
+            _G[popupName] = popup
+        end
+
+        popup._barKey = barKey
+        popup._spacerId = spacerId
+        -- Sync the slider/value box to this spacer's current width.
+        if popup._refreshSlider then popup._refreshSlider() end
+        popup._dimmer:Show()
+    end
+
+    ---------------------------------------------------------------------------
     --  Equipment Slot popup. Adds a slot-tracked entry (-slotID, the trinket -13/-14
     --  encoding) so the icon follows whatever item is equipped there (e.g. slot 6 = belt +
     --  its tinker). The name line echoes the typed slot (localized name + equipped item) so a bare number is confirmed before Add.
@@ -12543,6 +12634,44 @@ initFrame:SetScript("OnEvent", function(self)
 
             allItems[#allItems + 1] = esItem
             mH = mH + ITEM_H
+
+            -- "Add Spacer" option -- CD/utility bars only. Inserts a configurable-width
+            -- empty gap between icons (added at the end; drag it into place, right-click to
+            -- set its width). Bypasses onSelect/AddTrackedSpell via its own primitive.
+            local spItem = CreateFrame("Button", nil, inner)
+            spItem:SetHeight(ITEM_H)
+            spItem:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH)
+            spItem:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH)
+            spItem:SetFrameLevel(menu:GetFrameLevel() + 2)
+
+            local spHl = spItem:CreateTexture(nil, "ARTWORK")
+            spHl:SetAllPoints(); spHl:SetColorTexture(1, 1, 1, 0); spHl:SetAlpha(0)
+
+            local spLbl = spItem:CreateFontString(nil, "OVERLAY")
+            spLbl:SetFont(FONT_PATH, 11, GetCDMOptOutline())
+            spLbl:SetPoint("LEFT", 10, 0)
+            spLbl:SetJustifyH("LEFT")
+            spLbl:SetText(EllesmereUI.L("Add Spacer"))
+            spLbl:SetTextColor(tDimR, tDimG, tDimB, tDimA)
+
+            spItem:SetScript("OnEnter", function()
+                spLbl:SetTextColor(1, 1, 1, 1)
+                spHl:SetColorTexture(1, 1, 1, hlA); spHl:SetAlpha(1)
+            end)
+            spItem:SetScript("OnLeave", function()
+                spLbl:SetTextColor(tDimR, tDimG, tDimB, tDimA)
+                spHl:SetAlpha(0)
+            end)
+            spItem:SetScript("OnClick", function()
+                menu:Hide()
+                if ns.AddSpacerToBar and bd and bd.key then
+                    ns.AddSpacerToBar(bd.key)
+                    RefreshCDPreview()
+                end
+            end)
+
+            allItems[#allItems + 1] = spItem
+            mH = mH + ITEM_H
         end
 
         if false then -- misc bar custom item menu removed
@@ -13959,9 +14088,10 @@ initFrame:SetScript("OnEvent", function(self)
                 local entry = rowSlots[vi]
                 local s = entry.slot
                 local i = entry.idx
+                local sw = s._slotW or iconSz
                 local slotL = s._baseX
-                local slotR = slotL + iconSz
-                local slotCX = slotL + iconSz / 2
+                local slotR = slotL + sw
+                local slotCX = slotL + sw / 2
                 local isBlank = not s._icon or not s._icon:GetTexture()
                 local zone = isBlank and blankSwapZone or swapZone
                 if localX >= slotL - spacing * 0.5 and localX < slotR + spacing * 0.5 then
@@ -14140,7 +14270,7 @@ initFrame:SetScript("OnEvent", function(self)
                 local lineX, lineY
                 if leftSlot and leftSlot:IsShown() and leftSlot._baseX
                    and rightSlot and rightSlot:IsShown() and rightSlot._baseX then
-                    local leftRight = leftSlot._baseX + iconSz2 - nudge
+                    local leftRight = leftSlot._baseX + (leftSlot._slotW or iconSz2) - nudge
                     local rightLeft = rightSlot._baseX + nudge
                     lineX = (leftRight + rightLeft) / 2
                     lineY = rightSlot._baseY
@@ -14148,7 +14278,7 @@ initFrame:SetScript("OnEvent", function(self)
                     lineX = rightSlot._baseX + nudge - math.floor(spacing / 2) - 1
                     lineY = rightSlot._baseY
                 elseif leftSlot and leftSlot:IsShown() and leftSlot._baseX then
-                    lineX = leftSlot._baseX + iconSz2 - nudge + math.floor(spacing / 2) + 1
+                    lineX = leftSlot._baseX + (leftSlot._slotW or iconSz2) - nudge + math.floor(spacing / 2) + 1
                     lineY = leftSlot._baseY
                 end
 
@@ -14288,6 +14418,19 @@ initFrame:SetScript("OnEvent", function(self)
                 local bd = SelectedCDMBar()
                 if not bd then return end
                 local isDefaultBuffs = (bd.key == "buffs")
+
+                -- Spacer slot: middle-click removes it, right/left-click edits its width.
+                -- No per-spell settings apply.
+                if self._isSpacer and self._spacerId then
+                    if button == "MiddleButton" then
+                        if _spellPickerMenu and _spellPickerMenu:IsShown() then _spellPickerMenu:Hide() end
+                        if ns.RemoveSpacerFromBar then ns.RemoveSpacerFromBar(bd.key, self._spacerId) end
+                        RefreshCDPreview()
+                    else
+                        ShowSpacerWidthPopup(bd.key, self._spacerId)
+                    end
+                    return
+                end
 
                 if button == "MiddleButton" then
                     local si = self._slotIdx
@@ -14601,10 +14744,18 @@ initFrame:SetScript("OnEvent", function(self)
                 end
                 local ghost = EnsureDragGhost()
                 local iSz = bd.iconSize or 36
-                ghost:SetSize(iSz, iSz)
-                ghost._icon:SetTexture(self._icon:GetTexture())
-                local zm = bd.iconZoom or 0.08
-                ghost._icon:SetTexCoord(zm, 1 - zm, zm, 1 - zm)
+                if self._isSpacer then
+                    -- Spacer has no icon texture: drag a translucent block of its width.
+                    ghost:SetSize(math.max(self._slotW or iSz, 6), iSz)
+                    ghost._icon:SetTexture(nil)
+                    ghost._icon:SetColorTexture(1, 1, 1, 0.35)
+                    ghost._icon:SetTexCoord(0, 1, 0, 1)
+                else
+                    ghost:SetSize(iSz, iSz)
+                    ghost._icon:SetTexture(self._icon:GetTexture())
+                    local zm = bd.iconZoom or 0.08
+                    ghost._icon:SetTexCoord(zm, 1 - zm, zm, 1 - zm)
+                end
                 ghost:SetScale(0.5)
                 ghost:Show()
                 self:SetAlpha(0.3)
@@ -15007,6 +15158,26 @@ initFrame:SetScript("OnEvent", function(self)
             end
             local count = #tracked
 
+            -- Spacers (cooldown/utility bars): entries that render as an empty gap, not an
+            -- icon. They occupy a `tracked` slot (so they drag/reorder like any entry) but
+            -- must NOT count toward the icon grid -- the runtime wraps on real-icon count.
+            -- gridCount drives stride/rows; the running-cursor layout below (gated on
+            -- pvHasSpacers) positions real icons and spacers by their own widths. No-spacer
+            -- bars keep pvHasSpacers=false and run the original uniform-grid path untouched.
+            local pvSpacerWidths, pvHasSpacers = nil, false
+            local gridCount = count
+            if bd.key ~= "buffs" and not isBuffBar then
+                local sdPv = ns.GetBarSpellData(bd.key)
+                pvSpacerWidths = sdPv and sdPv.spacerWidths
+                if pvSpacerWidths and next(pvSpacerWidths) then
+                    local rc = 0
+                    for _, e in ipairs(tracked) do
+                        if not ns.IsSpacerEntry(e) then rc = rc + 1 end
+                    end
+                    if rc ~= count then pvHasSpacers = true; gridCount = rc end
+                end
+            end
+
             -- Use the same stride logic as the runtime (ComputeTopRowStride).
             -- Top and Bottom custom-row overrides are mutually exclusive; the
             -- Bottom override is the flip (pick the bottom count, top gets rest).
@@ -15014,37 +15185,50 @@ initFrame:SetScript("OnEvent", function(self)
             local customTop
             if numRows == 2 then
                 if bd.customTopRowEnabled and bd.topRowCount and bd.topRowCount > 0 then
-                    customTop = math.min(bd.topRowCount, count)
+                    customTop = math.min(bd.topRowCount, gridCount)
                 elseif bd.customBottomRowEnabled and bd.bottomRowCount and bd.bottomRowCount > 0 then
-                    customTop = count - math.min(bd.bottomRowCount, count)
+                    customTop = gridCount - math.min(bd.bottomRowCount, gridCount)
                 end
             end
             if customTop ~= nil then
                 if customTop < 0 then customTop = 0 end
                 topRowCount = customTop
-                local bottomCount = count - topRowCount
+                local bottomCount = gridCount - topRowCount
                 if bottomCount <= 0 or topRowCount <= 0 then
                     -- Match the runtime: collapse to one row until BOTH rows hold
                     -- an icon. This also keeps the "+" button on the single row.
                     numRows = 1
-                    topRowCount = count
-                    stride = math.max(count, 1)
+                    topRowCount = gridCount
+                    stride = math.max(gridCount, 1)
                 else
                     stride = math.max(topRowCount, bottomCount)
                 end
             else
-                stride = math.ceil(count / numRows)
+                stride = math.ceil(gridCount / numRows)
                 if stride < 1 then stride = 1 end
-                topRowCount = count - (numRows - 1) * stride
+                topRowCount = gridCount - (numRows - 1) * stride
                 if topRowCount < 0 then topRowCount = 0 end
             end
-            local gridSlots = (count > 0) and (stride * numRows) or 0
+            local gridSlots = (gridCount > 0) and (stride * numRows) or 0
             self._stride = stride
             self._numRows = numRows
             self._gridSlots = gridSlots
 
-            local bottomRowCount = count - topRowCount
+            local bottomRowCount = gridCount - topRowCount
             if bottomRowCount < 0 then bottomRowCount = 0 end
+
+            -- Total spacer width (coord) for centering headroom. A row's honored spacers
+            -- can't exceed this, so widening the content box by it keeps every slot on-canvas.
+            local pvSpacerTotal = 0
+            if pvHasSpacers then
+                for _, e in ipairs(tracked) do
+                    local spId = ns.SpacerIdFromEntry(e)
+                    if spId then
+                        local w = pvSpacerWidths[spId]
+                        if w and w > 0 then pvSpacerTotal = pvSpacerTotal + w + spacing end
+                    end
+                end
+            end
 
             -- Per-row icon count for centering
             local function RowIconCount(row)
@@ -15064,10 +15248,10 @@ initFrame:SetScript("OnEvent", function(self)
             if isVert then
                 local totalCols = numRows + 1
                 totalW = (totalCols * iconSize) + ((totalCols - 1) * spacing)
-                totalH = (stride * iconH) + ((stride - 1) * spacing)
+                totalH = (stride * iconH) + ((stride - 1) * spacing) + pvSpacerTotal
             else
                 local totalCols = stride + 1
-                totalW = (totalCols * iconSize) + ((totalCols - 1) * spacing)
+                totalW = (totalCols * iconSize) + ((totalCols - 1) * spacing) + pvSpacerTotal
                 totalH = (numRows * iconH) + ((numRows - 1) * spacing)
             end
 
@@ -15110,6 +15294,70 @@ initFrame:SetScript("OnEvent", function(self)
                 end
             end
 
+            -- Running-cursor layout for bars WITH spacers: real icons keep the grid's
+            -- col/row (so wrapping matches the runtime), and spacers render as gaps of
+            -- their own width between icons within a row. Leading/row-boundary/trailing
+            -- spacers are dropped (a spacer sits "between" icons), mirroring LayoutCDMBar.
+            -- pvLayout[i] = {x,y,w,h} per `tracked` entry, or false (hidden).
+            local pvLayout
+            local pvMaxRowEndG = 0  -- widest row's growth-axis end (for "+" placement)
+            if pvHasSpacers then
+                pvLayout = {}
+                local growStep = isVert and iconH or iconSize
+                local perpStep = isVert and (iconSize + spacing) or (iconH + spacing)
+                local function RowOff(row)
+                    local rowCount = RowIconCount(row)
+                    if rowCount > 0 and rowCount < stride then
+                        return math.floor((stride - rowCount) * (growStep + spacing) / 2)
+                    end
+                    return 0
+                end
+                local realOrd, gCur, vRowCur, pend = 0, 0, 0, {}
+                for i = 1, count do
+                    local spId = ns.SpacerIdFromEntry(tracked[i])
+                    if spId then
+                        pend[#pend + 1] = { i = i, w = pvSpacerWidths[spId] or 0 }
+                    else
+                        realOrd = realOrd + 1
+                        local col, row
+                        if realOrd <= topRowCount then
+                            col = realOrd - 1; row = 0
+                        else
+                            local b = realOrd - topRowCount - 1
+                            col = b % stride; row = 1 + math.floor(b / stride)
+                        end
+                        local vRow = pvReversed and (numRows - 1 - row) or row
+                        if col == 0 then
+                            for _, p in ipairs(pend) do pvLayout[p.i] = false end
+                            pend = {}
+                            gCur = RowOff(row); vRowCur = vRow
+                        else
+                            for _, p in ipairs(pend) do
+                                if p.w > 0 then
+                                    if isVert then
+                                        pvLayout[p.i] = { x = startX + vRowCur * perpStep, y = startY - gCur, w = iconSize, h = p.w }
+                                    else
+                                        pvLayout[p.i] = { x = startX + gCur, y = startY - vRowCur * perpStep, w = p.w, h = iconH }
+                                    end
+                                    gCur = gCur + p.w + spacing
+                                else
+                                    pvLayout[p.i] = false
+                                end
+                            end
+                            pend = {}
+                        end
+                        if isVert then
+                            pvLayout[i] = { x = startX + vRow * perpStep, y = startY - gCur, w = iconSize, h = iconH }
+                        else
+                            pvLayout[i] = { x = startX + gCur, y = startY - vRow * perpStep, w = iconSize, h = iconH }
+                        end
+                        gCur = gCur + growStep + spacing
+                        if gCur > pvMaxRowEndG then pvMaxRowEndG = gCur end
+                    end
+                end
+                for _, p in ipairs(pend) do pvLayout[p.i] = false end
+            end
+
             -- Border color
             local bR, bG, bB = bd.borderR or 0, bd.borderG or 0, bd.borderB or 0
             if bd.borderClassColor then
@@ -15124,7 +15372,8 @@ initFrame:SetScript("OnEvent", function(self)
 
             -- Layout: fill bottom-up. Icons 1..topRowCount go to top row (row 0),
             -- remaining icons fill rows 1..numRows-1 (full bottom rows).
-            for i = 1, math.min(gridSlots, MAX_PREVIEW_ICONS) do
+            local pvRenderMax = pvHasSpacers and count or gridSlots
+            for i = 1, math.min(pvRenderMax, MAX_PREVIEW_ICONS) do
                 local slot = previewSlots[i]
                 slot._slotIdx = i
                 -- The assignedSpells indices this slot covers (a legacy-duplicate
@@ -15132,18 +15381,61 @@ initFrame:SetScript("OnEvent", function(self)
                 -- settings popup's "Remove Spell" so it clears the whole duplicate.
                 slot._dataGroup = pf._buffDispGroups and pf._buffDispGroups[i] or nil
 
-                -- Map sequential index to bottom-up grid position
-                local col, row
-                if i <= topRowCount then
-                    col = i - 1
-                    row = 0
+                -- Positioning. With spacers, use the running-cursor pvLayout (variable
+                -- widths); otherwise the uniform grid. isSpacerSlot gates the body below.
+                local isSpacerSlot = false
+                local spSlotId = pvHasSpacers and ns.SpacerIdFromEntry(tracked[i]) or nil
+                if pvHasSpacers then
+                    local L = pvLayout[i]
+                    slot._isSpacer = (spSlotId ~= nil) or nil
+                    slot._spacerId = spSlotId
+                    if type(L) == "table" then
+                        PP.Size(slot, L.w, L.h); slot:ClearAllPoints()
+                        PP.Point(slot, "TOPLEFT", self, "TOPLEFT", L.x, L.y)
+                        slot._baseX = L.x; slot._baseY = L.y; slot._slotW = L.w
+                        isSpacerSlot = (spSlotId ~= nil)
+                    else
+                        -- Dropped spacer (leading/row-boundary/trailing): render nothing.
+                        slot._baseX = nil; slot._slotW = 0
+                        slot:Hide()
+                        isSpacerSlot = true
+                    end
                 else
-                    local bottomIdx = i - topRowCount - 1
-                    col = bottomIdx % stride
-                    row = 1 + math.floor(bottomIdx / stride)
+                    -- Map sequential index to bottom-up grid position
+                    local col, row
+                    if i <= topRowCount then
+                        col = i - 1
+                        row = 0
+                    else
+                        local bottomIdx = i - topRowCount - 1
+                        col = bottomIdx % stride
+                        row = 1 + math.floor(bottomIdx / stride)
+                    end
+                    PosAtGrid(slot, col, row)
+                    slot._slotW = iconSize
+                    slot._isSpacer = nil
+                    slot._spacerId = nil
                 end
-                PosAtGrid(slot, col, row)
 
+              if isSpacerSlot then
+                -- Spacer slot: a dim, borderless placeholder of its configured width.
+                -- Only when actually placed (a dropped spacer was already hidden above).
+                if slot._baseX ~= nil then
+                    slot._icon:SetTexture(nil)
+                    slot._previewSpellID = nil; slot._previewCdID = nil
+                    slot._previewItemID = nil; slot._previewHostedBuff = nil
+                    ns.ApplyShapeToCDMIcon(slot, "none", bd)
+                    if PP.GetBorders(slot) then PP.SetBorderColor(slot, 1, 1, 1, 0) end
+                    if slot._hostBrd then slot._hostBrd:Hide() end
+                    if slot._hlBrd then slot._hlBrd:Hide() end
+                    if slot._shapeBorder then slot._shapeBorder:Hide() end
+                    if slot._stackText then slot._stackText:Hide() end
+                    if slot._keybindText then slot._keybindText:Hide() end
+                    slot._bg:SetColorTexture(1, 1, 1, 0.06)
+                    if slot._bg.SetSnapToPixelGrid then slot._bg:SetSnapToPixelGrid(false); slot._bg:SetTexelSnappingBias(0) end
+                    slot:Show()
+                end
+              else
                 if i <= count then
                     -- Spell slot
                     local id = tracked[i]
@@ -15354,9 +15646,11 @@ initFrame:SetScript("OnEvent", function(self)
                 else
                     slot:Hide()
                 end
+              end  -- isSpacerSlot vs normal-body branch
             end
 
-            for i = gridSlots + 1, MAX_PREVIEW_ICONS do previewSlots[i]:Hide() end
+            local pvHideFrom = (pvHasSpacers and count or gridSlots) + 1
+            for i = pvHideFrom, MAX_PREVIEW_ICONS do previewSlots[i]:Hide() end
 
             -- "+" button: placed right after the last icon on the bottom row (always full,
             -- or the only row). For empty bars (count=0), the "+" is the only visible element.
@@ -15371,8 +15665,9 @@ initFrame:SetScript("OnEvent", function(self)
                 addPy = startY - (stride - 1) * (iconH + spacing)
             else
                 -- Horizontal: "+" goes right after the last column on the bottom row
+                -- (past the spacer-widened content when spacers are present).
                 local lastRow = numRows - 1
-                addPx = startX + stride * (iconSize + spacing)
+                addPx = startX + ((pvHasSpacers and pvMaxRowEndG > 0 and pvMaxRowEndG) or (stride * (iconSize + spacing)))
                 addPy = startY - lastRow * (iconH + spacing)
             end
             PP.Size(addBtn, iconSize, iconH); addBtn:ClearAllPoints()

@@ -926,12 +926,43 @@ function ns.CdClaimMarker(cdID)
     return -(ns.CD_CLAIM_MARKER_BASE + cdID)
 end
 
--- Decode a cd-claim marker to its cooldownID; nil for anything else.
+-- Decode a cd-claim marker to its cooldownID; nil for anything else. Bounded above by
+-- SPACER_MARKER_BASE so a spacer marker (<= -4e9) never misdecodes as a cooldownID.
 function ns.CdClaimMarkerToCdID(id)
-    if type(id) == "number" and id <= -ns.CD_CLAIM_MARKER_BASE then
+    if type(id) == "number" and id <= -ns.CD_CLAIM_MARKER_BASE
+       and id > -ns.SPACER_MARKER_BASE then
         return -id - ns.CD_CLAIM_MARKER_BASE
     end
     return nil
+end
+
+-------------------------------------------------------------------------------
+--  Spacer markers: an empty gap of configurable width placed between icons on a
+--  cooldown/utility bar. A spacer occupies an assignedSpells slot (so it reorders and
+--  drags like any entry) but claims NO icon frame; the layout reads it as gap pixels
+--  before the next real icon. Each spacer has a per-bar id (sd.spacerNextId counter) so
+--  its width (sd.spacerWidths[id]) and position stay independent even for equal widths.
+--
+--  Encoding: -(BASE + spacerId). BASE sits beyond CD_CLAIM_MARKER_BASE, so every marker
+--  decoder below it (bounded at its own next-higher base) already excludes spacers.
+-------------------------------------------------------------------------------
+ns.SPACER_MARKER_BASE = 4000000000
+ns.SPACER_DEFAULT_WIDTH = 12
+
+function ns.SpacerMarker(spacerId)
+    return -(ns.SPACER_MARKER_BASE + spacerId)
+end
+
+-- Decode a spacer marker to its spacerId; nil for anything else.
+function ns.SpacerIdFromEntry(id)
+    if type(id) == "number" and id <= -ns.SPACER_MARKER_BASE then
+        return -id - ns.SPACER_MARKER_BASE
+    end
+    return nil
+end
+
+function ns.IsSpacerEntry(id)
+    return ns.SpacerIdFromEntry(id) ~= nil
 end
 
 -- Every cd-claim marker in a bar's assignedSpells as a set ({[cdID]=true,...}), or nil if none.
@@ -4109,7 +4140,7 @@ local function CountCDMBarSpells(barKey)
     local sd = ns.GetBarSpellData(barKey)
     if not sd or not sd.assignedSpells then return 0 end
     for _, sid in ipairs(sd.assignedSpells) do
-        if sid and sid ~= 0 then count = count + 1 end
+        if sid and sid ~= 0 and not ns.IsSpacerEntry(sid) then count = count + 1 end
     end
     return count
 end
@@ -4223,6 +4254,74 @@ LayoutCDMBar = function(barKey)
         and EllesmereUI.GetHeightMatchTarget("CDM_" .. barKey) or nil
     local PP = EllesmereUI.PP
     local onePx = PP.mult
+
+    -- ===== Spacers (cooldown/utility bars): configurable empty gaps between icons. A
+    -- spacer occupies an assignedSpells slot but claims NO frame; it renders as extra
+    -- growth-axis space before the next real icon, WITHIN that icon's row. Leading,
+    -- row-boundary and trailing spacers are dropped (a spacer sits "between" icons).
+    -- ALL spacer math below is gated on hasSpacers, so a bar with none runs the original
+    -- arithmetic untouched. spacerGapPx[i] is keyed by grid position i (same col/row math
+    -- as the positioning loop); spacerGrowthPx = the widest row's total spacer extent, in
+    -- integer physical px (added in px space alongside iconWPx/spacingPx -- never
+    -- coord-then-snapped, matching this function's pixel invariant). =====
+    local hasSpacers, spacerGapPx, spacerGrowthPx = false, nil, 0
+    do
+        local sdSp = ns.GetBarSpellData and ns.GetBarSpellData(barKey)
+        local widths = sdSp and sdSp.spacerWidths
+        if widths and next(widths) and #icons > 0 then
+            -- Immediate spacer coord-width / count directly before each real-icon ordinal.
+            -- Ordinal counting skips spacers, matching the reanchor sort loop, so it lines
+            -- up with fc.sortOrder (an integer for a real assigned icon).
+            local rawW, rawN = {}, {}
+            local ordN, pendW, pendN = 0, 0, 0
+            for _, e in ipairs(sdSp.assignedSpells) do
+                if e and e ~= 0 then
+                    local spId = ns.SpacerIdFromEntry(e)
+                    if spId then
+                        local w = widths[spId]
+                        if w and w > 0 then pendW = pendW + w; pendN = pendN + 1 end
+                    else
+                        ordN = ordN + 1
+                        if pendW > 0 then rawW[ordN] = pendW; rawN[ordN] = pendN end
+                        pendW, pendN = 0, 0
+                    end
+                end
+            end
+            if next(rawW) then
+                hasSpacers = true
+                spacerGapPx = {}
+                local spacerRowGapPx = {}
+                local sStride, _sRows, sTop = ComputeTopRowStride(barData, #icons)
+                local physSp = math.floor(spacing / onePx + 0.5)
+                for i = 1, #icons do
+                    local col, row
+                    if i <= sTop then
+                        col = i - 1; row = 0
+                    else
+                        local b = i - sTop - 1
+                        col = b % sStride; row = 1 + math.floor(b / sStride)
+                    end
+                    local g = 0
+                    -- col>0 drops leading/boundary spacers; the sortOrder integer test
+                    -- drops spillover frames (fractional sortOrder) so a real icon's gap
+                    -- is never double-applied.
+                    if col > 0 then
+                        local fcSp = _ecmeFC[icons[i]]
+                        local so = fcSp and fcSp.sortOrder
+                        if type(so) == "number" and so == math.floor(so) and rawW[so] then
+                            g = math.floor(rawW[so] / onePx + 0.5) + (rawN[so] or 0) * physSp
+                        end
+                    end
+                    spacerGapPx[i] = g
+                    spacerRowGapPx[row] = (spacerRowGapPx[row] or 0) + g
+                end
+                for _, v in pairs(spacerRowGapPx) do
+                    if v > spacerGrowthPx then spacerGrowthPx = v end
+                end
+            end
+        end
+    end
+
     local iconW
     -- True ONLY when the width-match math below produces an iconW. Gates the cropped-height-from-matched-width path so non-matched and height-matched bars stay byte-identical.
     local widthMatchApplied = false
@@ -4253,6 +4352,9 @@ LayoutCDMBar = function(barKey)
         local curDim = CurWidthDim()
         if targetW > 1 and curDim and curDim > 0 then
             local physTarget = math.floor(targetW / onePx + 0.5)
+            -- Spacers eat interior width: reserve their px before dividing the remainder
+            -- among icons, so the matched bar's OUTER width stays exactly on target.
+            if hasSpacers and isHoriz then physTarget = physTarget - spacerGrowthPx end
             local physSp = math.floor(spacing / onePx + 0.5)
             local rawPhysIcon = (physTarget - (curDim - 1) * physSp) / curDim
             if rawPhysIcon < 8 then rawPhysIcon = 8 end
@@ -4271,6 +4373,8 @@ LayoutCDMBar = function(barKey)
             local shape = barData.iconShape or "none"
             local cropFactor = (shape == "cropped") and 0.80 or 1.0
             local physTarget = math.floor(targetH / onePx + 0.5)
+            -- Vertical bars grow spacers along the height axis; reserve their px here too.
+            if hasSpacers and not isHoriz then physTarget = physTarget - spacerGrowthPx end
             local physSp = math.floor(spacing / onePx + 0.5)
             local rawPhysIcon = (physTarget - (curDim - 1) * physSp) / curDim / cropFactor
             if rawPhysIcon < 8 then rawPhysIcon = 8 end
@@ -4434,6 +4538,13 @@ LayoutCDMBar = function(barKey)
     -- for CENTER-anchored frames) puts the center on a half-pixel grid for odd dimensions, so both
     -- edges already land on whole physical pixels. A forced +1 pads the frame 1 px wider than the icon layout -- visible as the unlock overlay overhanging the last icon.
 
+    -- Spacers grow the container along the growth axis by the widest row's spacer extent.
+    -- One insertion covers every size branch above (uniform, per-row, min-size reserve);
+    -- the positioning loop shifts icons by the same per-row amount so both stay in step.
+    if hasSpacers then
+        if isHoriz then totalWPx = totalWPx + spacerGrowthPx else totalHPx = totalHPx + spacerGrowthPx end
+    end
+
     local totalW = totalWPx * onePx
     local totalH = totalHPx * onePx
     frame._acLiveW, frame._acLiveH = totalW, totalH
@@ -4475,6 +4586,7 @@ LayoutCDMBar = function(barKey)
         -- centered along the growth axis; the perpendicular axis stacks the two bands. No match extras -- gated off when matched.
         local isMouseBar = barData.anchorTo == "mouse"
         local topN = customTopCount
+        local spAccumPx = 0
         for i, icon in ipairs(visibleIcons) do
             local iconScale = icon:GetScale() or 1
             if iconScale < 0.01 then iconScale = 1 end
@@ -4484,6 +4596,16 @@ LayoutCDMBar = function(barKey)
             local idxInRow = (rowIdx == 1) and (i - 1) or (i - topN - 1)
             local rowN     = (rowIdx == 1) and topN or (sizeCount - topN)
             local wPx, hPx = rowWPx[rowIdx], rowHPx[rowIdx]
+
+            -- Running spacer offset for this row (reset at idxInRow 0); spacerGrowthPx is
+            -- folded into rowMainPx below so the row+spacer block stays centered.
+            local spGapCoord = 0
+            if hasSpacers then
+                if idxInRow == 0 then spAccumPx = 0 end
+                spAccumPx = spAccumPx + (spacerGapPx[i] or 0)
+                spGapCoord = spAccumPx * onePx
+            end
+            local spRowPx = hasSpacers and spacerGrowthPx or 0
 
             FC(icon).matchExpanded = nil
             icon:SetSize(wPx * onePx * iS, hPx * onePx * iS)
@@ -4501,7 +4623,7 @@ LayoutCDMBar = function(barKey)
             if isHoriz then
                 -- Growth axis = width (center the row within the bar width);
                 -- perpendicular = height (top band, then bottom band).
-                local rowMainPx = rowN * wPx + math.max(0, rowN - 1) * spacingPx
+                local rowMainPx = rowN * wPx + math.max(0, rowN - 1) * spacingPx + spRowPx
                 local offMainPx = math.floor((totalWPx - rowMainPx) / 2 + 0.5)
                 local xPx = offMainPx + idxInRow * (wPx + spacingPx)
                 -- Reversed when rows grow upward: rowIdx 2 on top, 1 below.
@@ -4511,12 +4633,12 @@ LayoutCDMBar = function(barKey)
                 else
                     yPx = (rowIdx == 1) and 0 or (rowHPx[1] + spacingPx)
                 end
-                anchorX = (xPx * onePx) * iS
+                anchorX = (xPx * onePx + spGapCoord) * iS
                 anchorY = -(yPx * onePx) * iS
             else
                 -- Growth axis = height (center the row within the bar height);
                 -- perpendicular = width (left band, then right band).
-                local rowMainPx = rowN * hPx + math.max(0, rowN - 1) * spacingPx
+                local rowMainPx = rowN * hPx + math.max(0, rowN - 1) * spacingPx + spRowPx
                 local offMainPx = math.floor((totalHPx - rowMainPx) / 2 + 0.5)
                 local yPx = offMainPx + idxInRow * (hPx + spacingPx)
                 -- Reversed when columns grow leftward: rowIdx 2 at the left.
@@ -4527,7 +4649,7 @@ LayoutCDMBar = function(barKey)
                     xPx = (rowIdx == 1) and 0 or (rowWPx[1] + spacingPx)
                 end
                 anchorX = (xPx * onePx) * iS
-                anchorY = -(yPx * onePx) * iS
+                anchorY = -(yPx * onePx + spGapCoord) * iS
             end
 
             local fd = _getFD(icon)
@@ -4567,6 +4689,8 @@ LayoutCDMBar = function(barKey)
     -- the PERPENDICULAR axis (row index).
     local growthW = isHoriz and extraPixels or extraPixelsH
     local growthH = isHoriz and extraPixelsH or extraPixels
+    -- Running spacer offset along the growth axis, reset at each row start (col == 0).
+    local spAccumPx = 0
     for i, icon in ipairs(visibleIcons) do
         -- Compensate for Blizzard's per-icon scale so visual size matches.
         local iconScale = icon:GetScale() or 1
@@ -4627,8 +4751,17 @@ LayoutCDMBar = function(barKey)
         local rowCount = RowIconCount(row)
         local rowHasLess = (rowCount > 0 and rowCount < stride)
 
+        -- Spacer offset: accumulate this row's gap px up to and including icon i, then
+        -- convert to coord. spacerGapPx[i] is 0 at col==0, so leading/boundary gaps drop.
+        local spGapCoord = 0
+        if hasSpacers then
+            if col == 0 then spAccumPx = 0 end
+            spAccumPx = spAccumPx + (spacerGapPx[i] or 0)
+            spGapCoord = spAccumPx * onePx
+        end
+
         -- Offsets as absolute parent-space integers, divided by iconScale for SetPoint. NO per-position snapping: dividing integers by the same constant produces mathematically uniform gaps.
-        local posX = col * stepW + extraBefore
+        local posX = col * stepW + extraBefore + spGapCoord
         local posY = vRow * stepH
 
         -- Resolve anchor params first, then stamp fd._cdmAnchor BEFORE SetPoint: the SetPoint hook
@@ -4650,7 +4783,7 @@ LayoutCDMBar = function(barKey)
             end
             anchorPt, anchorRelPt = "TOPLEFT", "TOPLEFT"
             anchorX = (vRow * stepW + extraBeforeR) * iS
-            anchorY = -(col * stepH + extraBefore + rowOffset + padOffset) * iS
+            anchorY = -(col * stepH + extraBefore + spGapCoord + rowOffset + padOffset) * iS
         end
 
         if anchorPt then

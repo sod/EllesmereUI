@@ -7037,10 +7037,11 @@ local function CollectAndReanchor()
                 local spellList = sdInj and sdInj.assignedSpells
                 if spellList then
                     for idx, sid in ipairs(spellList) do
-                        -- Cd-claim markers (collided-buff slots) are also
-                        -- <= -100; they are not items.
+                        -- Cd-claim markers (collided-buff slots) and spacer
+                        -- markers are also <= -100; neither is an item.
                         if type(sid) == "number" and sid <= -100
-                           and not ns.CdClaimMarkerToCdID(sid) then
+                           and not ns.CdClaimMarkerToCdID(sid)
+                           and not ns.SpacerIdFromEntry(sid) then
                             local itemID = -sid
                             local f = GetOrCreateItemPresetFrame(injKey, itemID)
                             if f then
@@ -7478,7 +7479,7 @@ local function CollectAndReanchor()
                     if spellList then
                         local idx = 0
                         for _, sid in ipairs(spellList) do
-                            if sid and sid ~= 0 then
+                            if sid and sid ~= 0 and not ns.IsSpacerEntry(sid) then
                                 idx = idx + 1
                                 -- Hosted-buff marker: rank the BUFF frame of the
                                 -- decoded spell at this slot. Kept in its own map so
@@ -7610,6 +7611,9 @@ local function CollectAndReanchor()
                             else
                                 tf:Hide()
                             end
+                        elseif sid and ns.SpacerIdFromEntry(sid) then
+                            -- Spacer marker: a layout-only gap, no frame. Skip
+                            -- here so -sid (<= -4e9) is never taken as an itemID.
                         elseif sid and sid <= -100 then
                             -- Item preset (potions, healthstone, etc.) or a
                             -- user-added custom item ID. Frame creation (incl.
