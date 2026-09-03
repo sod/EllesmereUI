@@ -4287,7 +4287,9 @@ LayoutCDMBar = function(barKey)
                     end
                 end
             end
-            if next(rawW) then
+            -- Leftover = trailing spacers (after the last real icon): pure end padding.
+            local trailW, trailN = pendW, pendN
+            if next(rawW) or trailW > 0 then
                 hasSpacers = true
                 spacerGapPx = {}
                 local spacerRowGapPx = {}
@@ -4301,19 +4303,24 @@ LayoutCDMBar = function(barKey)
                         local b = i - sTop - 1
                         col = b % sStride; row = 1 + math.floor(b / sStride)
                     end
+                    -- Gap directly before this icon (leading pad when col==0). The sortOrder
+                    -- integer test drops spillover frames (fractional sortOrder) so a real
+                    -- icon's gap is never double-applied.
                     local g = 0
-                    -- col>0 drops leading/boundary spacers; the sortOrder integer test
-                    -- drops spillover frames (fractional sortOrder) so a real icon's gap
-                    -- is never double-applied.
-                    if col > 0 then
-                        local fcSp = _ecmeFC[icons[i]]
-                        local so = fcSp and fcSp.sortOrder
-                        if type(so) == "number" and so == math.floor(so) and rawW[so] then
-                            g = math.floor(rawW[so] / onePx + 0.5) + (rawN[so] or 0) * physSp
-                        end
+                    local fcSp = _ecmeFC[icons[i]]
+                    local so = fcSp and fcSp.sortOrder
+                    if type(so) == "number" and so == math.floor(so) and rawW[so] then
+                        g = math.floor(rawW[so] / onePx + 0.5) + (rawN[so] or 0) * physSp
                     end
                     spacerGapPx[i] = g
                     spacerRowGapPx[row] = (spacerRowGapPx[row] or 0) + g
+                end
+                -- Trailing pad grows the last row (the container), shifting no icon.
+                local trailPx = (trailW > 0) and (math.floor(trailW / onePx + 0.5) + trailN * physSp) or 0
+                if trailPx > 0 then
+                    local lastRow = select(2, ComputeTopRowStride(barData, #icons)) - 1
+                    if lastRow < 0 then lastRow = 0 end
+                    spacerRowGapPx[lastRow] = (spacerRowGapPx[lastRow] or 0) + trailPx
                 end
                 for _, v in pairs(spacerRowGapPx) do
                     if v > spacerGrowthPx then spacerGrowthPx = v end

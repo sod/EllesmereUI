@@ -15313,6 +15313,22 @@ initFrame:SetScript("OnEvent", function(self)
                     return 0
                 end
                 local realOrd, gCur, vRowCur, pend = 0, 0, 0, {}
+                -- Place a pending spacer as a visible slot at the current cursor. In the
+                -- editor EVERY spacer is shown (even leading/trailing) so it can be grabbed
+                -- and dragged; a zero-width spacer collapses to nothing.
+                local function FlushSpacer(p)
+                    if p.w and p.w > 0 then
+                        if isVert then
+                            pvLayout[p.i] = { x = startX + vRowCur * perpStep, y = startY - gCur, w = iconSize, h = p.w }
+                        else
+                            pvLayout[p.i] = { x = startX + gCur, y = startY - vRowCur * perpStep, w = p.w, h = iconH }
+                        end
+                        gCur = gCur + p.w + spacing
+                        if gCur > pvMaxRowEndG then pvMaxRowEndG = gCur end
+                    else
+                        pvLayout[p.i] = false
+                    end
+                end
                 for i = 1, count do
                     local spId = ns.SpacerIdFromEntry(tracked[i])
                     if spId then
@@ -15328,24 +15344,12 @@ initFrame:SetScript("OnEvent", function(self)
                         end
                         local vRow = pvReversed and (numRows - 1 - row) or row
                         if col == 0 then
-                            for _, p in ipairs(pend) do pvLayout[p.i] = false end
-                            pend = {}
+                            -- New row: seat the cursor, then place any pending spacers as this
+                            -- row's leading pad (indent) before the icon.
                             gCur = RowOff(row); vRowCur = vRow
-                        else
-                            for _, p in ipairs(pend) do
-                                if p.w > 0 then
-                                    if isVert then
-                                        pvLayout[p.i] = { x = startX + vRowCur * perpStep, y = startY - gCur, w = iconSize, h = p.w }
-                                    else
-                                        pvLayout[p.i] = { x = startX + gCur, y = startY - vRowCur * perpStep, w = p.w, h = iconH }
-                                    end
-                                    gCur = gCur + p.w + spacing
-                                else
-                                    pvLayout[p.i] = false
-                                end
-                            end
-                            pend = {}
                         end
+                        for _, p in ipairs(pend) do FlushSpacer(p) end
+                        pend = {}
                         if isVert then
                             pvLayout[i] = { x = startX + vRow * perpStep, y = startY - gCur, w = iconSize, h = iconH }
                         else
@@ -15355,7 +15359,8 @@ initFrame:SetScript("OnEvent", function(self)
                         if gCur > pvMaxRowEndG then pvMaxRowEndG = gCur end
                     end
                 end
-                for _, p in ipairs(pend) do pvLayout[p.i] = false end
+                -- Trailing spacers (after the last icon): place them at the end of the last row.
+                for _, p in ipairs(pend) do FlushSpacer(p) end
             end
 
             -- Border color
@@ -15431,7 +15436,10 @@ initFrame:SetScript("OnEvent", function(self)
                     if slot._shapeBorder then slot._shapeBorder:Hide() end
                     if slot._stackText then slot._stackText:Hide() end
                     if slot._keybindText then slot._keybindText:Hide() end
-                    slot._bg:SetColorTexture(1, 1, 1, 0.06)
+                    -- Distinct look: a translucent accent-tinted block so the spacer reads
+                    -- as an editable gap (not an empty icon slot) and is easy to grab.
+                    local seg = EllesmereUI.ELLESMERE_GREEN
+                    slot._bg:SetColorTexture(seg.r, seg.g, seg.b, 0.22)
                     if slot._bg.SetSnapToPixelGrid then slot._bg:SetSnapToPixelGrid(false); slot._bg:SetTexelSnappingBias(0) end
                     slot:Show()
                 end
