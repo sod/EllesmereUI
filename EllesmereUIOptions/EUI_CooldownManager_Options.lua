@@ -7187,6 +7187,9 @@ initFrame:SetScript("OnEvent", function(self)
                 popup, 180, 4, 14, 46, 26, 13, SL.INPUT_A or 0.6,
                 1, 200, 1,
                 function()
+                    -- Guard nil: this runs once during popup build, before _barKey is set,
+                    -- and GetBarSpellData(nil) errors (it assigns barSpells[nil]).
+                    if not (popup._barKey and popup._spacerId) then return ns.SPACER_DEFAULT_WIDTH end
                     local sd = ns.GetBarSpellData(popup._barKey)
                     return (sd and sd.spacerWidths and sd.spacerWidths[popup._spacerId])
                         or ns.SPACER_DEFAULT_WIDTH
